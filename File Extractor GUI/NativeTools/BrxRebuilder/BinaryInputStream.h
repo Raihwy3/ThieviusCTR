@@ -28,6 +28,7 @@ public:
     [[nodiscard]] std::size_t GetOffset() const;
     [[nodiscard]] std::size_t GetSize() const { return size_; }
     [[nodiscard]] std::size_t Remaining() const;
+    [[nodiscard]] const std::uint8_t* GetMemoryData() const { return memory_; }
 
     std::uint8_t U8Read();
     std::uint16_t U16Read();

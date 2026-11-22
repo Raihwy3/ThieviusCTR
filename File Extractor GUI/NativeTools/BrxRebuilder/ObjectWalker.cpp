@@ -189,6 +189,10 @@ void ReadEmitMesh(CBinaryInputStream& s) {
 void BrxWalker::ReadEmitColors(CBinaryInputStream& s, std::uint16_t count) {
     // fColorRanges remains a byte. Only the packed RGBA8 array changes in v3.
     s.U8Read();
+    if (dryRun_) {
+        s.Skip(std::size_t(count) * 4u);
+        return;
+    }
     const auto colorsBegin = s.GetOffset();
     std::vector<std::uint8_t> floatColors;
     floatColors.reserve(std::size_t(count) * 16);
@@ -206,6 +210,11 @@ void BrxWalker::LoadSwObjectsFromBrx(CBinaryInputStream& s, unsigned depth) {
     if (depth > 256) throw std::runtime_error("object hierarchy exceeds 256 levels");
     constexpr std::int16_t kCidUnk11 = 107;
     const auto countStart = s.GetOffset();
+    std::size_t countOutPos = 0;
+    if (streamingOut_ && streamSuppressDepth_ == 0) {
+        StreamFlushSourceTo(countStart);
+        countOutPos = streamWrittenBytes_;
+    }
     const auto count = s.U16Read();
     std::uint16_t removedCount = 0;
     bool havePrevious = false;
@@ -214,7 +223,20 @@ void BrxWalker::LoadSwObjectsFromBrx(CBinaryInputStream& s, unsigned depth) {
     for (std::uint16_t i = 0; i < count; ++i) {
         const auto objectStart = s.GetOffset();
         const auto cid = s.S16Read(), oid = s.S16Read(), splice = s.S16Read();
-        ++stats_.objects;
+        if (!dryRun_) ++stats_.objects;
+        const bool removingUnk11 = (cid == kCidUnk11);
+        struct SuppressGuard {
+            unsigned* depthPtr{};
+            ~SuppressGuard() {
+                if (depthPtr) --(*depthPtr);
+            }
+        } suppressGuard;
+        if (streamingOut_ && removingUnk11) {
+            if (streamSuppressDepth_ == 0)
+                StreamFlushSourceTo(objectStart);
+            ++streamSuppressDepth_;
+            suppressGuard.depthPtr = &streamSuppressDepth_;
+        }
         try { DispatchObject(s, cid, oid, splice, depth); }
         catch (const std::exception& e) {
             std::ostringstream out;
@@ -235,28 +257,49 @@ void BrxWalker::LoadSwObjectsFromBrx(CBinaryInputStream& s, unsigned depth) {
         previousStart = objectStart;
         previousEnd = s.GetOffset();
 
-        if (cid == kCidUnk11) {
+        if (removingUnk11) {
             const auto objectEnd = s.GetOffset();
-
-            // CID_UNK11 is the retail executable-integrity checker. Parse it
-            // normally so malformed source data still fails validation, then
-            // discard both the complete serialized object and any conversions
-            // that were discovered while walking its ALO hierarchy.
-            rebuildOperations_.erase(std::remove_if(rebuildOperations_.begin(),
-                rebuildOperations_.end(), [objectStart, objectEnd](const RebuildOperation& operation) {
-                    const bool overlaps = operation.begin < objectEnd && operation.end > objectStart;
-                    if (!overlaps)
-                        return false;
-                    if (operation.begin < objectStart || operation.end > objectEnd)
-                        throw std::runtime_error("CID_UNK11 contains a partially overlapping rebuild operation");
-                    return true;
-                }), rebuildOperations_.end());
-            RecordReplacement(objectStart, objectEnd, {});
-            ++removedCount;
+            if (dryRun_) {
+                ++removedCount;
+            } else if (streamingOut_) {
+                if (suppressGuard.depthPtr) {
+                    --(*suppressGuard.depthPtr);
+                    suppressGuard.depthPtr = nullptr;
+                }
+                if (streamSuppressDepth_ == 0)
+                    streamSourceCursor_ = objectEnd;
+                ++removedCount;
+            } else {
+                // CID_UNK11 is the retail executable-integrity checker. Parse it
+                // normally so malformed source data still fails validation, then
+                // discard both the complete serialized object and any conversions
+                // that were discovered while walking its ALO hierarchy.
+                rebuildOperations_.erase(std::remove_if(rebuildOperations_.begin(),
+                    rebuildOperations_.end(), [objectStart, objectEnd](const RebuildOperation& operation) {
+                        const bool overlaps = operation.begin < objectEnd && operation.end > objectStart;
+                        if (!overlaps)
+                            return false;
+                        if (operation.begin < objectStart || operation.end > objectEnd)
+                            throw std::runtime_error("CID_UNK11 contains a partially overlapping rebuild operation");
+                        return true;
+                    }), rebuildOperations_.end());
+                RecordReplacement(objectStart, objectEnd, {});
+                ++removedCount;
+            }
         }
     }
 
     if (removedCount != 0) {
+        if (dryRun_)
+            return;
+        if (streamingOut_) {
+            if (streamSuppressDepth_ == 0) {
+                if (streamSourceCursor_ < countStart + sizeof(std::uint16_t))
+                    StreamFlushSourceTo(countStart + sizeof(std::uint16_t));
+                StreamPatchU16(countOutPos, static_cast<std::uint16_t>(count - removedCount));
+            }
+            return;
+        }
         std::vector<std::uint8_t> replacement;
         AppendU16(replacement, static_cast<std::uint16_t>(count - removedCount));
         RecordReplacement(countStart, countStart + sizeof(std::uint16_t),
@@ -272,7 +315,11 @@ void BrxWalker::DispatchObject(CBinaryInputStream& s, std::int16_t cid,
     const std::string_view loader(entry->loader);
     try {
     if (loader == "LoadLoFromBrx") return LoadLo(s);
-    if (loader == "LoadSwFromBrx") return LoadSwFromBrx(s);
+    if (loader == "LoadSwFromBrx") {
+        if (dryRun_ || streamingOut_)
+            throw std::runtime_error("unexpected nested SW object in streaming mode");
+        return LoadSwFromBrx(s);
+    }
     if (loader == "LoadAloFromBrx") return LoadAlo(s, depth);
     if (loader == "LoadSoFromBrx") return LoadSo(s, depth);
     // These retail overrides add no serialized fields; they only select runtime behavior.
@@ -348,6 +395,15 @@ void BrxWalker::DispatchObject(CBinaryInputStream& s, std::int16_t cid,
     if (loader == "LoadVismapFromBrx") {
         const auto vismapBegin = s.GetOffset();
         const auto nodes = s.U16Read();
+        if (dryRun_) {
+            s.Skip(std::size_t(nodes) * 24u);
+            const auto zones = s.U16Read();
+            if (zones > 32)
+                throw std::runtime_error("vismap one-hop zone count exceeds 32-bit masks");
+            s.Skip(std::size_t(zones) * 4u);
+            LoadOptionsFromBrx(s);
+            return;
+        }
         std::vector<std::uint8_t> replacement;
         replacement.reserve(2u + std::size_t(nodes) * 32u);
         AppendU16(replacement, nodes);
@@ -605,6 +661,26 @@ std::uint8_t BrxWalker::LoadGlobset(CBinaryInputStream& s) {
             const auto pcBlockBegin = s.GetOffset();
             const auto vc=s.U8Read(), nc=s.U8Read(), cc=s.U8Read(), tc=s.U8Read(), ic=s.U8Read();
             s.Align(4);
+            if (dryRun_) {
+                s.Skip(static_cast<std::size_t>(vc) * 12u +
+                       static_cast<std::size_t>(nc) * 12u +
+                       static_cast<std::size_t>(cc) * 4u +
+                       static_cast<std::size_t>(tc) * 8u +
+                       static_cast<std::size_t>(ic) * 4u);
+                s.U16Read();
+                s.U8Read();
+                const auto bi = s.U8Read();
+                s.Skip(static_cast<std::size_t>(bi) +
+                       static_cast<std::size_t>(vc) * bi * 4u);
+                if (poseCount) {
+                    const auto pp = s.U16Read();
+                    s.Skip(static_cast<std::size_t>(pp) * 12u);
+                    const auto pn = s.U16Read();
+                    s.Skip(static_cast<std::size_t>(pn) * 12u +
+                           static_cast<std::size_t>(poseCount) * ic * 4u);
+                }
+                continue;
+            }
             std::vector<Vec3> positions(vc);
             std::vector<Vec3> normals(nc);
             std::vector<std::array<float, 4>> colors(cc);
@@ -749,6 +825,21 @@ std::uint8_t BrxWalker::LoadGlobset(CBinaryInputStream& s) {
         }
         const auto subcelCount=s.U16Read();
         for (std::uint16_t sub=0; sub<subcelCount; ++sub) {
+            if (dryRun_) {
+                const auto pc = s.U8Read();
+                s.Skip(static_cast<std::size_t>(pc) * 12u);
+                const auto ec = s.U8Read();
+                s.Skip(static_cast<std::size_t>(ec) * 4u);
+                const auto bi = s.U8Read();
+                s.Skip(static_cast<std::size_t>(bi) +
+                       static_cast<std::size_t>(bi) * pc * 4u);
+                if (poseCount) {
+                    const auto pp = s.U16Read();
+                    s.Skip(static_cast<std::size_t>(pp) * 12u +
+                           static_cast<std::size_t>(poseCount) * pc * 2u);
+                }
+                continue;
+            }
             const auto pcBlockBegin = s.GetOffset();
             const auto pc=s.U8Read();
             std::vector<Vec3> positions(pc);

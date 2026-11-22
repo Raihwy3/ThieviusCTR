@@ -4,6 +4,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <array>
 #include <filesystem>
 #include <unordered_map>
@@ -31,6 +32,7 @@ public:
     void WalkMemory(const std::uint8_t* data, std::size_t size,
         const std::filesystem::path& outputPath,
         ProgressCallback progress = nullptr, void* progressContext = nullptr);
+    void SetMaxBcCacheBytes(std::size_t bytes) { maxBcCacheBytes_ = bytes; }
     [[nodiscard]] const WalkStats& Stats() const { return stats_; }
     GeometrySummary ReadGeom(CBinaryInputStream& stream);
     void ReadBspc(CBinaryInputStream& stream, const GeometrySummary& geometry);
@@ -74,7 +76,24 @@ private:
     std::size_t lastOptionEnd_{};
     std::int16_t lastOptionId_{-1};
     bool haveLastOption_{};
+    struct ResolvedImage {
+        std::uint32_t w{}, h{}, zone{}, mips{}, flags{}, offset{}, format{}, dataSize{};
+        std::uint64_t hash{};
+        std::uint16_t srcBi{}, srcCi{};
+        bool srcFont{}, srcAllowBc{};
+        bool hasCachedBc{};
+        std::vector<std::uint8_t> cachedBc;
+    };
     void LoadSwFromBrx(CBinaryInputStream& stream);
+    void LoadSwHeaderAndShaders(CBinaryInputStream& stream);
+    void ResolveTexturesForStreaming(CBinaryInputStream& stream,
+        std::vector<ResolvedImage>& images);
+    void WriteResolvedTextures(const std::uint8_t* source, std::size_t sourceSize,
+        std::size_t texturesStart, std::vector<ResolvedImage>& images);
+    void StreamWriteBytes(const std::uint8_t* bytes, std::size_t count);
+    void StreamFlushSourceTo(std::size_t targetOffset);
+    void StreamAlign(std::size_t alignment);
+    void StreamPatchU16(std::size_t fileOffset, std::uint16_t value);
     void RemoveNameTableFromBrx(CBinaryInputStream& stream, bool debugInfo);
     bool HasPalLocalizationTable(CBinaryInputStream& stream);
     void RemovePalLocalizationTable(CBinaryInputStream& stream);
@@ -128,4 +147,13 @@ private:
     bool captureEmitOrigin_{};
     bool emitOriginCaptured_{};
     std::int16_t emitOriginKind_{};
+    bool dryRun_{};
+    bool streamingOut_{};
+    unsigned streamSuppressDepth_{};
+    std::FILE* streamFile_{};
+    const std::uint8_t* streamSource_{};
+    std::size_t streamSourceSize_{};
+    std::size_t streamSourceCursor_{};
+    std::size_t streamWrittenBytes_{};
+    std::size_t maxBcCacheBytes_{6u * 1024u * 1024u};
 };

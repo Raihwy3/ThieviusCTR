@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <climits>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -10,6 +11,26 @@
 #include <sstream>
 #include <stdexcept>
 #include <utility>
+
+namespace {
+std::vector<std::uint8_t> BuildPalLocalizationFooter(const std::vector<std::string>& strings) {
+    std::vector<std::uint8_t> out;
+    const auto appendU32 = [&out](std::uint32_t value) {
+        for (int shift = 0; shift < 32; shift += 8)
+            out.push_back(static_cast<std::uint8_t>(value >> shift));
+    };
+    appendU32(static_cast<std::uint32_t>(strings.size()));
+    for (const std::string& text : strings) {
+        appendU32(static_cast<std::uint32_t>(text.size()));
+        out.insert(out.end(), text.begin(), text.end());
+    }
+    const std::uint32_t tableSize = static_cast<std::uint32_t>(out.size());
+    constexpr std::uint32_t localizationMagic = 0x434f4c50; // "PLOC"
+    appendU32(localizationMagic);
+    appendU32(tableSize);
+    return out;
+}
+}
 
 BrxWalker::BrxWalker(StringEncoding encoding, BrxSourceRegion region)
     : encoding_(encoding), region_(region) {}
@@ -21,13 +42,48 @@ void BrxWalker::WalkFile(const std::filesystem::path& path) {
 void BrxWalker::WalkMemory(const std::uint8_t* data, std::size_t size,
     const std::filesystem::path& outputPath,
     ProgressCallback progress, void* progressContext) {
+    std::vector<char> ioBuf(65536);
+    struct WalkMemoryGuard {
+        BrxWalker* self;
+        ~WalkMemoryGuard() {
+            if (self->streamFile_) {
+                std::fclose(self->streamFile_);
+                self->streamFile_ = nullptr;
+            }
+            self->dryRun_ = false;
+            self->streamingOut_ = false;
+            self->streamSuppressDepth_ = 0;
+            self->streamSource_ = nullptr;
+            self->streamSourceSize_ = 0;
+            self->streamSourceCursor_ = 0;
+            self->streamWrittenBytes_ = 0;
+            self->progress_ = nullptr;
+            self->progressContext_ = nullptr;
+        }
+    };
+
     stats_ = {};
     pal_ = false;
     palLocalizationStrings_.clear();
     referenceLocalizationStrings_.clear();
     rebuildOperations_.clear();
+    sourceCluts_.clear();
+    sourceBitmaps_.clear();
+    pendingTextures_.clear();
+    pendingFonts_.clear();
+    shaderColors_.clear();
+    dryRun_ = false;
+    streamingOut_ = false;
+    streamSuppressDepth_ = 0;
+    streamFile_ = nullptr;
+    streamSource_ = data;
+    streamSourceSize_ = size;
+    streamSourceCursor_ = 0;
+    streamWrittenBytes_ = 0;
     progress_ = progress;
     progressContext_ = progressContext;
+    WalkMemoryGuard guard{this};
+
     CBinaryInputStream stream(data, size, encoding_);
     const auto begin = stream.GetOffset(); stream.S32Read(); stream.S32Read();
     RecordReplacement(begin, stream.GetOffset(), {
@@ -35,13 +91,84 @@ void BrxWalker::WalkMemory(const std::uint8_t* data, std::size_t size,
         17, 0, 0, 0
     });
     Trace("CTransition::Execute header", begin, stream.GetOffset());
-    LoadSwFromBrx(stream);
+    LoadSwHeaderAndShaders(stream);
+    const std::size_t objectsStart = stream.GetOffset();
+
+    // Pass 1 (dry run): locate the start of textures without retaining geometry allocations.
+    dryRun_ = true;
+    LoadSwObjectsFromBrx(stream);
+    const std::size_t alignmentBegin = stream.GetOffset();
+    stream.Align(16);
+    const std::size_t texturesStart = stream.GetOffset();
+    dryRun_ = false;
+
+    std::vector<ResolvedImage> resolvedImages;
+    ResolveTexturesForStreaming(stream, resolvedImages);
     if (stream.GetOffset() != stream.GetSize())
         throw std::runtime_error("BRX walk ended before EOF at offset " +
             std::to_string(stream.GetOffset()) + " of " + std::to_string(stream.GetSize()));
-    WriteRebuiltStream(data, size, outputPath);
-    progress_ = nullptr;
-    progressContext_ = nullptr;
+
+    streamFile_ = std::fopen(outputPath.string().c_str(), "wb");
+    if (!streamFile_)
+        throw std::runtime_error("could not create rebuilt BRX output");
+    std::setvbuf(streamFile_, ioBuf.data(), _IOFBF, ioBuf.size());
+
+    std::sort(rebuildOperations_.begin(), rebuildOperations_.end(),
+        [](const RebuildOperation& left, const RebuildOperation& right) {
+            return left.begin < right.begin;
+        });
+
+    for (RebuildOperation& operation : rebuildOperations_) {
+        if (operation.begin < streamSourceCursor_ || operation.end < operation.begin ||
+            operation.end > objectsStart)
+            throw std::runtime_error("overlapping or invalid rebuild operation");
+        StreamFlushSourceTo(operation.begin);
+        streamSourceCursor_ = operation.end;
+        if (operation.alignment != 0) {
+            StreamAlign(operation.alignment);
+        } else {
+            StreamWriteBytes(operation.replacement.data(), operation.replacement.size());
+            std::vector<std::uint8_t>().swap(operation.replacement);
+        }
+    }
+    StreamFlushSourceTo(objectsStart);
+    std::vector<RebuildOperation>().swap(rebuildOperations_);
+
+    // Pass 2: stream object & geometry replacements straight to disk.
+    stream.Seek(objectsStart);
+    streamingOut_ = true;
+    streamSuppressDepth_ = 0;
+    LoadSwObjectsFromBrx(stream);
+    if (stream.GetOffset() != alignmentBegin)
+        throw std::runtime_error("BRX streaming second pass offset mismatch before texture alignment");
+    StreamFlushSourceTo(alignmentBegin);
+    StreamAlign(16);
+    stream.Align(16);
+    if (stream.GetOffset() != texturesStart)
+        throw std::runtime_error("BRX streaming second pass alignment mismatch");
+    streamSourceCursor_ = texturesStart;
+    streamingOut_ = false;
+
+    WriteResolvedTextures(data, size, texturesStart, resolvedImages);
+    std::vector<ResolvedImage>().swap(resolvedImages);
+    std::vector<SourceClut>().swap(sourceCluts_);
+    std::vector<SourceBitmap>().swap(sourceBitmaps_);
+    streamSourceCursor_ = size;
+
+    if (pal_) {
+        const auto footer = BuildPalLocalizationFooter(palLocalizationStrings_);
+        StreamWriteBytes(footer.data(), footer.size());
+    }
+
+    std::vector<std::string>().swap(palLocalizationStrings_);
+    std::vector<std::string>().swap(referenceLocalizationStrings_);
+
+    if (std::ferror(streamFile_) != 0)
+        throw std::runtime_error("failed while writing rebuilt BRX output");
+    std::FILE* closing = streamFile_;
+    streamFile_ = nullptr;
+    if (std::fclose(closing) != 0)
+        throw std::runtime_error("failed while closing rebuilt BRX output");
 }
 
 void BrxWalker::LoadLevelIdentityMap(const std::filesystem::path& path) {
@@ -81,8 +208,7 @@ void BrxWalker::WalkFileInternal(const std::filesystem::path& path) {
     std::wcout << L"Rebuilt file: " << outputPath.wstring() << L'\n';
 }
 
-void BrxWalker::LoadSwFromBrx(CBinaryInputStream& stream) {
-    const auto begin=stream.GetOffset();
+void BrxWalker::LoadSwHeaderAndShaders(CBinaryInputStream& stream) {
     const auto debugFlagBegin = stream.GetOffset();
     const bool debugInfo = stream.U8Read() != 0;
     RecordReplacement(debugFlagBegin, stream.GetOffset(), {});
@@ -120,7 +246,13 @@ void BrxWalker::LoadSwFromBrx(CBinaryInputStream& stream) {
         stream.Skip(localizationAssetCount * localizationAssetSize);
         RecordReplacement(localizationAssetsBegin, stream.GetOffset(), {});
     }
-    LoadShadersFromBrx(stream); LoadSwObjectsFromBrx(stream);
+    LoadShadersFromBrx(stream);
+}
+
+void BrxWalker::LoadSwFromBrx(CBinaryInputStream& stream) {
+    const auto begin=stream.GetOffset();
+    LoadSwHeaderAndShaders(stream);
+    LoadSwObjectsFromBrx(stream);
     const auto alignmentBegin = stream.GetOffset();
     stream.Align(16);
     RecordAlignment(alignmentBegin, stream.GetOffset(), 16);
@@ -497,12 +629,91 @@ void BrxWalker::ConvertSoundBank(CBinaryInputStream& stream) {
 
 void BrxWalker::RecordAlignment(std::size_t begin, std::size_t end,
     std::size_t alignment) {
+    if (dryRun_)
+        return;
+    if (streamingOut_) {
+        if (streamSuppressDepth_ > 0)
+            return;
+        if (begin < streamSourceCursor_ || end < begin || end > streamSourceSize_)
+            throw std::runtime_error("overlapping or invalid streaming alignment");
+        StreamFlushSourceTo(begin);
+        StreamAlign(alignment);
+        streamSourceCursor_ = end;
+        return;
+    }
     rebuildOperations_.push_back({begin, end, alignment, {}});
 }
 
 void BrxWalker::RecordReplacement(std::size_t begin, std::size_t end,
     std::vector<std::uint8_t> replacement) {
+    if (dryRun_)
+        return;
+    if (streamingOut_) {
+        if (streamSuppressDepth_ > 0)
+            return;
+        if (begin < streamSourceCursor_ || end < begin || end > streamSourceSize_)
+            throw std::runtime_error("overlapping or invalid streaming replacement");
+        StreamFlushSourceTo(begin);
+        StreamWriteBytes(replacement.data(), replacement.size());
+        streamSourceCursor_ = end;
+        return;
+    }
     rebuildOperations_.push_back({begin, end, 0, std::move(replacement)});
+}
+
+void BrxWalker::StreamWriteBytes(const std::uint8_t* bytes, std::size_t count) {
+    if (count == 0)
+        return;
+    if (!streamFile_ || std::fwrite(bytes, 1, count, streamFile_) != count)
+        throw std::runtime_error("failed while writing rebuilt BRX output");
+    streamWrittenBytes_ += count;
+}
+
+void BrxWalker::StreamFlushSourceTo(std::size_t targetOffset) {
+    if (targetOffset > streamSourceSize_)
+        throw std::runtime_error("streaming source flush target exceeds input size");
+    if (targetOffset < streamSourceCursor_)
+        throw std::runtime_error("streaming source flush moved backwards");
+    if (targetOffset > streamSourceCursor_) {
+        StreamWriteBytes(streamSource_ + streamSourceCursor_, targetOffset - streamSourceCursor_);
+        streamSourceCursor_ = targetOffset;
+    }
+}
+
+void BrxWalker::StreamAlign(std::size_t alignment) {
+    if (alignment == 0)
+        return;
+    const auto remainder = streamWrittenBytes_ % alignment;
+    if (remainder != 0) {
+        const std::size_t padCount = alignment - remainder;
+        std::array<std::uint8_t, 64> zeros{};
+        std::size_t left = padCount;
+        while (left > 0) {
+            const std::size_t chunk = std::min(left, zeros.size());
+            StreamWriteBytes(zeros.data(), chunk);
+            left -= chunk;
+        }
+    }
+}
+
+void BrxWalker::StreamPatchU16(std::size_t fileOffset, std::uint16_t value) {
+    if (!streamFile_)
+        throw std::runtime_error("StreamPatchU16 called without open stream");
+    if (fileOffset > static_cast<std::size_t>(LONG_MAX) ||
+        streamWrittenBytes_ > static_cast<std::size_t>(LONG_MAX))
+        throw std::runtime_error("streaming BRX offset exceeds fseek range");
+    if (std::fflush(streamFile_) != 0 ||
+        std::fseek(streamFile_, static_cast<long>(fileOffset), SEEK_SET) != 0)
+        throw std::runtime_error("failed while seeking rebuilt BRX stream for patch");
+    const std::uint8_t buf[2] = {
+        static_cast<std::uint8_t>(value & 0xffu),
+        static_cast<std::uint8_t>(value >> 8)
+    };
+    if (std::fwrite(buf, 1, sizeof(buf), streamFile_) != sizeof(buf))
+        throw std::runtime_error("failed while patching rebuilt BRX count");
+    if (std::fflush(streamFile_) != 0 ||
+        std::fseek(streamFile_, static_cast<long>(streamWrittenBytes_), SEEK_SET) != 0)
+        throw std::runtime_error("failed while restoring rebuilt BRX stream position");
 }
 
 std::filesystem::path BrxWalker::WriteRebuiltFile(
@@ -547,24 +758,8 @@ std::filesystem::path BrxWalker::WriteRebuiltFile(
 
     // Keep PAL's per-level UI/subtitle table available to the PC runtime.
     if (pal_) {
-        std::vector<std::uint8_t> localization;
-        const auto appendU32 = [&localization](std::uint32_t value) {
-            for (int shift = 0; shift < 32; shift += 8)
-                localization.push_back(static_cast<std::uint8_t>(value >> shift));
-        };
-        appendU32(static_cast<std::uint32_t>(palLocalizationStrings_.size()));
-        for (const std::string& text : palLocalizationStrings_) {
-            appendU32(static_cast<std::uint32_t>(text.size()));
-            localization.insert(localization.end(), text.begin(), text.end());
-        }
-        rebuilt.insert(rebuilt.end(), localization.begin(), localization.end());
-        constexpr std::uint32_t localizationMagic = 0x434f4c50; // "PLOC"
-        const auto appendRebuiltU32 = [&rebuilt](std::uint32_t value) {
-            for (int shift = 0; shift < 32; shift += 8)
-                rebuilt.push_back(static_cast<std::uint8_t>(value >> shift));
-        };
-        appendRebuiltU32(localizationMagic);
-        appendRebuiltU32(static_cast<std::uint32_t>(localization.size()));
+        const auto footer = BuildPalLocalizationFooter(palLocalizationStrings_);
+        rebuilt.insert(rebuilt.end(), footer.begin(), footer.end());
     }
 
     auto outputPath = sourcePath;
@@ -629,26 +824,8 @@ void BrxWalker::WriteRebuiltStream(const std::uint8_t* source,
         writeBytes(source + sourceCursor, sourceSize - sourceCursor);
 
         if (pal_) {
-            std::vector<std::uint8_t> localization;
-            const auto appendU32 = [&localization](std::uint32_t value) {
-                for (int shift = 0; shift < 32; shift += 8)
-                    localization.push_back(static_cast<std::uint8_t>(value >> shift));
-            };
-            appendU32(static_cast<std::uint32_t>(palLocalizationStrings_.size()));
-            for (const std::string& text : palLocalizationStrings_) {
-                appendU32(static_cast<std::uint32_t>(text.size()));
-                localization.insert(localization.end(), text.begin(), text.end());
-            }
-            writeBytes(localization.data(), localization.size());
-            constexpr std::uint32_t localizationMagic = 0x434f4c50; // "PLOC"
-            const auto writeU32 = [&writeBytes](std::uint32_t value) {
-                std::uint8_t buf[4];
-                for (int i = 0; i < 4; ++i)
-                    buf[i] = static_cast<std::uint8_t>(value >> (i * 8));
-                writeBytes(buf, 4);
-            };
-            writeU32(localizationMagic);
-            writeU32(static_cast<std::uint32_t>(localization.size()));
+            const auto footer = BuildPalLocalizationFooter(palLocalizationStrings_);
+            writeBytes(footer.data(), footer.size());
         }
     } catch (...) {
         std::fclose(out);

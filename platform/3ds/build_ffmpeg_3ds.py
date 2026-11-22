@@ -10,7 +10,7 @@ import urllib.request
 ROOT = Path(__file__).resolve().parents[2]
 FFMPEG_VERSION = '7.1.1'
 FFMPEG_URL = f'https://ffmpeg.org/releases/ffmpeg-{FFMPEG_VERSION}.tar.xz'
-STAMP_VERSION = 'ffmpeg-3ds-v2'
+STAMP_VERSION = 'ffmpeg-3ds-v3'
 
 
 def ensure_tarball(tarball: Path) -> None:
@@ -67,6 +67,93 @@ def patch_bink_demuxer(src_dir: Path) -> None:
     bink_c.write_text(text.replace(target, replacement, 1))
 
 
+def patch_tx_tables(src_dir: Path) -> None:
+    tx_c = src_dir / 'libavutil/tx_template.c'
+    text = tx_c.read_text()
+    if 'SR_TABLE(2097152)' not in text:
+        return
+
+    replacements = [
+        (
+            '    SR_TABLE(8192)     \\\n'
+            '    SR_TABLE(16384)    \\\n'
+            '    SR_TABLE(32768)    \\\n'
+            '    SR_TABLE(65536)    \\\n'
+            '    SR_TABLE(131072)   \\\n'
+            '    SR_TABLE(262144)   \\\n'
+            '    SR_TABLE(524288)   \\\n'
+            '    SR_TABLE(1048576)   \\\n'
+            '    SR_TABLE(2097152)   \\',
+            '    SR_TABLE(8192)     \\',
+            'SR_POW2_TABLES',
+        ),
+        (
+            '    if (factor_2) {\n'
+            '        int idx = factor_2 - 3;\n'
+            '        for (int i = 0; i <= idx; i++)',
+            '    if (factor_2) {\n'
+            '        int idx = factor_2 - 3;\n'
+            '        if (idx >= (int)FF_ARRAY_ELEMS(sr_tabs_init_funcs))\n'
+            '            return;\n'
+            '        for (int i = 0; i <= idx; i++)',
+            'ff_tx_init_tabs',
+        ),
+        (
+            'DECL_SR_CODELET(8192,4096,2048)\n'
+            'DECL_SR_CODELET(16384,8192,4096)\n'
+            'DECL_SR_CODELET(32768,16384,8192)\n'
+            'DECL_SR_CODELET(65536,32768,16384)\n'
+            'DECL_SR_CODELET(131072,65536,32768)\n'
+            'DECL_SR_CODELET(262144,131072,65536)\n'
+            'DECL_SR_CODELET(524288,262144,131072)\n'
+            'DECL_SR_CODELET(1048576,524288,262144)\n'
+            'DECL_SR_CODELET(2097152,1048576,524288)',
+            'DECL_SR_CODELET(8192,4096,2048)',
+            'DECL_SR_CODELET',
+        ),
+        (
+            'static const FFTXCodelet TX_NAME(ff_tx_fft_inplace_small_def) = {\n'
+            '    .name       = TX_NAME_STR("fft_inplace_small"),\n'
+            '    .function   = TX_NAME(ff_tx_fft),\n'
+            '    .type       = TX_TYPE(FFT),\n'
+            '    .flags      = AV_TX_UNALIGNED | FF_TX_OUT_OF_PLACE | AV_TX_INPLACE,\n'
+            '    .factors[0] = TX_FACTOR_ANY,\n'
+            '    .nb_factors = 1,\n'
+            '    .min_len    = 2,\n'
+            '    .max_len    = 65536,',
+            'static const FFTXCodelet TX_NAME(ff_tx_fft_inplace_small_def) = {\n'
+            '    .name       = TX_NAME_STR("fft_inplace_small"),\n'
+            '    .function   = TX_NAME(ff_tx_fft),\n'
+            '    .type       = TX_TYPE(FFT),\n'
+            '    .flags      = AV_TX_UNALIGNED | FF_TX_OUT_OF_PLACE | AV_TX_INPLACE,\n'
+            '    .factors[0] = TX_FACTOR_ANY,\n'
+            '    .nb_factors = 1,\n'
+            '    .min_len    = 2,\n'
+            '    .max_len    = 8192,',
+            'ff_tx_fft_inplace_small_def',
+        ),
+        (
+            '    &TX_NAME(ff_tx_fft8192_ns_def),\n'
+            '    &TX_NAME(ff_tx_fft16384_ns_def),\n'
+            '    &TX_NAME(ff_tx_fft32768_ns_def),\n'
+            '    &TX_NAME(ff_tx_fft65536_ns_def),\n'
+            '    &TX_NAME(ff_tx_fft131072_ns_def),\n'
+            '    &TX_NAME(ff_tx_fft262144_ns_def),\n'
+            '    &TX_NAME(ff_tx_fft524288_ns_def),\n'
+            '    &TX_NAME(ff_tx_fft1048576_ns_def),\n'
+            '    &TX_NAME(ff_tx_fft2097152_ns_def),',
+            '    &TX_NAME(ff_tx_fft8192_ns_def),',
+            'ff_tx_codelet_list',
+        ),
+    ]
+    for target, replacement, label in replacements:
+        if target not in text:
+            raise RuntimeError(f'Expected tx_template.c {label} target not found in {tx_c}')
+        text = text.replace(target, replacement, 1)
+
+    tx_c.write_text(text)
+
+
 def main() -> Path:
     dk = Path(os.environ.get('DEVKITPRO', '/opt/devkitpro'))
     cross_prefix = str(dk / 'devkitARM/bin/arm-none-eabi-')
@@ -75,7 +162,7 @@ def main() -> Path:
     src_dir = base / 'src'
     obj_dir = base / 'obj'
     install_dir = base / 'install'
-    stamp = install_dir / '.ffmpeg-3ds-v2'
+    stamp = install_dir / '.ffmpeg-3ds-v3'
     libs = [install_dir / 'lib' / f'lib{name}.a' for name in ('avformat', 'avcodec', 'avutil')]
 
     if (
@@ -89,6 +176,7 @@ def main() -> Path:
     ensure_tarball(tarball)
     ensure_source(tarball, src_dir)
     patch_bink_demuxer(src_dir)
+    patch_tx_tables(src_dir)
 
     shutil.rmtree(obj_dir, ignore_errors=True)
     shutil.rmtree(install_dir, ignore_errors=True)

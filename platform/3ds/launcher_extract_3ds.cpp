@@ -14,6 +14,7 @@
 #include <dirent.h>
 #include <exception>
 #include <fcntl.h>
+#include <malloc.h>
 #include <map>
 #include <stdexcept>
 #include <string>
@@ -37,6 +38,18 @@ void logLauncher(FILE* logFile, const char* fmt, ...) {
     std::fputc('\n', logFile);
     std::fflush(logFile);
     va_end(args);
+}
+
+void logMemState(FILE* logFile, const char* tag) {
+    if (!logFile) return;
+    const struct mallinfo mi = mallinfo();
+    logLauncher(logFile,
+                "Mem [%s]: heapTotal=%lu KiB heapUsed=%lu KiB heapFree=%lu KiB linearFree=%lu KiB",
+                tag ? tag : "?",
+                static_cast<unsigned long>(envGetHeapSize() / 1024u),
+                static_cast<unsigned long>(size_t(mi.uordblks) / 1024u),
+                static_cast<unsigned long>(size_t(mi.fordblks) / 1024u),
+                static_cast<unsigned long>(size_t(linearSpaceFree()) / 1024u));
 }
 
 u32 readU32Le(const u8* p) {
@@ -712,11 +725,33 @@ bool decodeVagToWavFile(const u8* vagData, size_t vagLen,
     if (rate < 4000u || rate > 192000u) return false;
     const size_t end = std::min(vagLen, size_t(48) + (bodySize ? size_t(bodySize) : vagLen - 48));
 
+    if (!ensureParentDir(dstPath)) return false;
+    const std::string tmpPath = dstPath + ".tmp";
+    std::array<char, 16384> ioBuf{};
+    std::FILE* f = std::fopen(tmpPath.c_str(), "wb");
+    if (!f) return false;
+    std::setvbuf(f, ioBuf.data(), _IOFBF, ioBuf.size());
+
+    u8 wavHdr[44]{};
+    bool ok = std::fwrite(wavHdr, 1, 44, f) == 44;
+
     pcmScratch.clear();
-    pcmScratch.reserve(((end > 48 ? end - 48 : 0) / 16u + 1u) * 28u);
+    if (pcmScratch.capacity() < 4096u)
+        pcmScratch.reserve(4096u);
+    u64 totalSamples = 0;
+
+    auto flushChunk = [&]() -> bool {
+        if (pcmScratch.empty()) return true;
+        if (std::fwrite(pcmScratch.data(), sizeof(s16), pcmScratch.size(), f) != pcmScratch.size())
+            return false;
+        totalSamples += u64(pcmScratch.size());
+        pcmScratch.clear();
+        return true;
+    };
+
     int h1 = 0;
     int h2 = 0;
-    for (size_t block = 48; block + 15 < end; block += 16) {
+    for (size_t block = 48; ok && block + 15 < end; block += 16) {
         const unsigned shift = vagData[block] & 15u;
         const unsigned predictor = vagData[block] >> 4;
         const int a = predictor < 5u ? kVagCoeff[predictor][0] : 0;
@@ -731,21 +766,25 @@ bool decodeVagToWavFile(const u8* vagData, size_t vagLen,
             h1 = clamped;
             pcmScratch.push_back(s16(clamped));
         }
+        if (pcmScratch.size() >= 4096u && !flushChunk()) {
+            ok = false;
+            break;
+        }
         if (vagData[block + 1u] & 1u) break;
     }
-    if (pcmScratch.empty()) return false;
 
-    const u32 dataBytes = u32(pcmScratch.size() * sizeof(s16));
-    u8 wavHdr[44];
-    fillWavHeaderMono16(wavHdr, rate, dataBytes);
+    if (ok && !flushChunk()) ok = false;
+    const u64 totalBytes64 = totalSamples * u64(sizeof(s16));
+    if (ok && (totalSamples == 0u || totalBytes64 > 0xffffffffull)) ok = false;
 
-    if (!ensureParentDir(dstPath)) return false;
-    const std::string tmpPath = dstPath + ".tmp";
-    std::FILE* f = std::fopen(tmpPath.c_str(), "wb");
-    if (!f) return false;
-    const bool ok = std::fwrite(wavHdr, 1, 44, f) == 44 &&
-                    std::fwrite(pcmScratch.data(), 1, dataBytes, f) == dataBytes &&
-                    std::fflush(f) == 0;
+    if (ok) {
+        fillWavHeaderMono16(wavHdr, rate, u32(totalBytes64));
+        ok = std::fflush(f) == 0 &&
+             fseeko(f, 0, SEEK_SET) == 0 &&
+             std::fwrite(wavHdr, 1, 44, f) == 44 &&
+             std::fflush(f) == 0;
+    }
+
     if (std::fclose(f) != 0 || !ok || !commitTempFile(tmpPath, dstPath)) {
         std::remove(tmpPath.c_str());
         return false;
@@ -1552,6 +1591,67 @@ bool CaneLauncherEnsureAssets3ds(const char* baseDir,
         }
     }
 
+    struct ElfBlobDesc { u32 sector{}; u32 size{}; u32 ident{}; };
+    struct CommentaryDesc { u32 levelId{}; float dur{}; u32 sector{}; u32 size{}; u32 ident{}; std::string speakers; };
+    struct MovieDesc { u32 sector{}; u32 size{}; };
+
+    const u32 bankTableOff = 0x00244F40u - kElfBaseVaddr + kElfFileBase;
+    const u32 commBase = 0x00248748u - kElfBaseVaddr + kElfFileBase;
+    const u32 ambBase = 0x002482D8u - kElfBaseVaddr + kElfFileBase;
+    const u32 promptOff = 0x0026A118u - kElfBaseVaddr + kElfFileBase;
+    const u32 movieTableOff = 0x00248490u - kElfBaseVaddr + kElfFileBase;
+    if (bankTableOff + 7u * 32u > elf.size() ||
+        commBase + 33u * 44u > elf.size() ||
+        ambBase + 6u * 32u > elf.size() ||
+        promptOff + 32u > elf.size() ||
+        movieTableOff + 17u * 32u > elf.size()) {
+        showErrorAndWaitStart(prog, "ISO ERROR", "Truncated ELF asset table",
+                              "SCUS_971.98 audio/movie table truncated.", logFile);
+        return false;
+    }
+
+    ElfBlobDesc bankDescs[7]{};
+    for (unsigned i = 0; i < 7u; ++i) {
+        decodeDesc(&elf[bankTableOff + i * 32u], bankDescs[i].sector, bankDescs[i].size, bankDescs[i].ident);
+    }
+
+    std::vector<CommentaryDesc> commDescs(33);
+    for (unsigned i = 0; i < 33u; ++i) {
+        const u32 off = commBase + i * 44u;
+        CommentaryDesc& cd = commDescs[i];
+        cd.levelId = readU32Le(&elf[off]);
+        cd.dur = readF32Le(&elf[off + 4]);
+        decodeDesc(&elf[off + 8], cd.sector, cd.size, cd.ident);
+        const u32 speakerVa = readU32Le(&elf[off + 40]);
+        cd.speakers = readCstrElf(elf, speakerVa);
+        if (cd.speakers.empty()) cd.speakers = "Unknown";
+        for (char& ch : cd.speakers) {
+            if (ch == '\r' || ch == '\n') ch = ' ';
+        }
+    }
+
+    ElfBlobDesc ambDescs[6]{};
+    for (unsigned i = 0; i < 6u; ++i) {
+        decodeDesc(&elf[ambBase + i * 32u], ambDescs[i].sector, ambDescs[i].size, ambDescs[i].ident);
+    }
+
+    ElfBlobDesc promptDesc{};
+    decodeDesc(&elf[promptOff], promptDesc.sector, promptDesc.size, promptDesc.ident);
+
+    MovieDesc movieDescs[18]{};
+    for (unsigned i = 0; i < 17u; ++i) {
+        u32 sec = 0, sz = 0, ident = 0;
+        decodeDesc(&elf[movieTableOff + i * 32u], sec, sz, ident);
+        const unsigned outIdx = (i == 0u) ? 16u : (i - 1u);
+        movieDescs[outIdx] = { sec, sz };
+    }
+    movieDescs[17] = { 0xC8F03u, 0xAB4004u };
+
+    // Release the ~2.6 MiB PS2 ELF buffer now that all tables have been parsed.
+    std::vector<u8>().swap(elf);
+    logMemState(logFile, "before extraction");
+    const u64 extractStartMs = osGetTime();
+
     // Step A: Extract missing/invalid BRX levels.
     {
         LinearScratch rawScratch;
@@ -1568,11 +1668,13 @@ bool CaneLauncherEnsureAssets3ds(const char* baseDir,
 
             std::string detail = task.name + " (" + std::to_string(doneLevels + 1) + "/" +
                                  std::to_string(orderedTasks.size()) + ")";
+            const u64 levelStartMs = osGetTime();
             logLauncher(logFile, "Extracting level 0x%03X: %s (%u bytes compressed)",
                         unsigned(task.id), task.name.c_str(), unsigned(task.compSize));
 
             if (!compScratch.allocAtLeast(task.compSize) ||
                 !rawScratch.allocAtLeast(kMaxRawLevelBytes)) {
+                logMemState(logFile, "linear alloc error");
                 showErrorAndWaitStart(prog, "MEMORY ERROR", task.name.c_str(),
                                       "Insufficient linear RAM to extract\nthis level.", logFile);
                 return false;
@@ -1617,9 +1719,13 @@ bool CaneLauncherEnsureAssets3ds(const char* baseDir,
                     return false;
                 }
                 logLauncher(logFile, "Level extraction failed (%s): %s", task.name.c_str(), e.what());
+                logMemState(logFile, "after level error");
                 showErrorAndWaitStart(prog, "EXTRACTION ERROR", task.name.c_str(), e.what(), logFile);
                 return false;
             }
+            logLauncher(logFile, "Extracted level 0x%03X: %s in %.2fs",
+                        unsigned(task.id), task.name.c_str(),
+                        double(osGetTime() - levelStartMs) / 1000.0);
             ++doneLevels;
         }
     }
@@ -1630,7 +1736,6 @@ bool CaneLauncherEnsureAssets3ds(const char* baseDir,
     {
         const std::string bankDir = dir + "/Worlds/Sound Banks";
         ensureDir(bankDir);
-        const u32 bankTableOff = 0x00244F40u - kElfBaseVaddr + kElfFileBase;
         std::vector<u8> buf;
         for (unsigned i = 0; i < 7u; ++i) {
             if (!prog.pump("Extracting music & banks", kBankNames[i],
@@ -1638,8 +1743,8 @@ bool CaneLauncherEnsureAssets3ds(const char* baseDir,
                 return false;
             }
             const std::string bnkPath = bankDir + "/" + kBankNames[i] + ".bnk";
-            u32 sec = 0, sz = 0, ident = 0;
-            decodeDesc(&elf[bankTableOff + i * 32u], sec, sz, ident);
+            const u32 sec = bankDescs[i].sector;
+            const u32 sz = bankDescs[i].size;
             const u64 off = u64(sec) * kSectorBytes;
             if (!isValidBnk(bnkPath, sz)) {
                 if (sz == 0 || sz > 8u * 1024u * 1024u || off > iso.size() || u64(sz) > iso.size() - off) {
@@ -1783,16 +1888,15 @@ bool CaneLauncherEnsureAssets3ds(const char* baseDir,
 
         const std::string commDir = dir + "/Worlds/Sounds/Commentary";
         ensureDir(commDir);
-        const u32 commBase = 0x00248748u - kElfBaseVaddr + kElfFileBase;
         std::string commMap;
         commMap.reserve(4096);
         for (unsigned i = 0; i < 33u; ++i) {
-            const u32 off = commBase + i * 44u;
-            const u32 levelId = readU32Le(&elf[off]);
-            const float dur = readF32Le(&elf[off + 4]);
-            u32 sec = 0, sz = 0, ident = 0;
-            decodeDesc(&elf[off + 8], sec, sz, ident);
-            const u32 speakerVa = readU32Le(&elf[off + 40]);
+            const CommentaryDesc& cd = commDescs[i];
+            const u32 levelId = cd.levelId;
+            const float dur = cd.dur;
+            const u32 sec = cd.sector;
+            const u32 sz = cd.size;
+            const u32 ident = cd.ident;
             if (!prog.pump("Decoding extra audio", "Developer commentary",
                            extraDone, totalExtra, extraDone, totalExtra, 1)) {
                 return false;
@@ -1815,16 +1919,11 @@ bool CaneLauncherEnsureAssets3ds(const char* baseDir,
                         return false;
                     }
                 }
-                std::string speakers = readCstrElf(elf, speakerVa);
-                if (speakers.empty()) speakers = "Unknown";
-                for (char& ch : speakers) {
-                    if (ch == '\r' || ch == '\n') ch = ' ';
-                }
                 char line[320];
                 std::snprintf(line, sizeof(line),
                               "%s | levelId 0x%X | duration %.6g | identity 0x%X | sector 0x%X | bytes 0x%X | speakers %s\n",
                               wavName, unsigned(levelId), double(dur), unsigned(ident),
-                              unsigned(sec), unsigned(sz), speakers.c_str());
+                              unsigned(sec), unsigned(sz), cd.speakers.c_str());
                 commMap += line;
             }
             ++extraDone;
@@ -1839,10 +1938,9 @@ bool CaneLauncherEnsureAssets3ds(const char* baseDir,
 
         const std::string ambDir = dir + "/Worlds/Sounds/JLO Ambient";
         ensureDir(ambDir);
-        const u32 ambBase = 0x002482D8u - kElfBaseVaddr + kElfFileBase;
         for (unsigned i = 0; i < 6u; ++i) {
-            u32 sec = 0, sz = 0, ident = 0;
-            decodeDesc(&elf[ambBase + i * 32u], sec, sz, ident);
+            const u32 sec = ambDescs[i].sector;
+            const u32 sz = ambDescs[i].size;
             char wavName[32];
             std::snprintf(wavName, sizeof(wavName), "JloAmbient_%u.wav", i + 1u);
             if (!prog.pump("Decoding extra audio", wavName,
@@ -1868,8 +1966,8 @@ bool CaneLauncherEnsureAssets3ds(const char* baseDir,
 
         const std::string promptDir = dir + "/Worlds/Sounds/Prompt";
         ensureDir(promptDir);
-        u32 pSec = 0, pSz = 0, pIdent = 0;
-        decodeDesc(&elf[0x0026A118u - kElfBaseVaddr + kElfFileBase], pSec, pSz, pIdent);
+        const u32 pSec = promptDesc.sector;
+        const u32 pSz = promptDesc.size;
         if (!prog.pump("Decoding extra audio", "PromptPrk18.wav",
                        extraDone, totalExtra, extraDone, totalExtra, 1)) {
             return false;
@@ -1894,21 +1992,6 @@ bool CaneLauncherEnsureAssets3ds(const char* baseDir,
     {
         const std::string cutsceneDir = dir + "/Cutscenes";
         ensureDir(cutsceneDir);
-        const u32 movieTableOff = 0x00248490u - kElfBaseVaddr + kElfFileBase;
-        if (movieTableOff + 17u * 32u > elf.size()) {
-            showErrorAndWaitStart(prog, "ISO ERROR", "Truncated movie table",
-                                  "SCUS_971.98 movie table truncated.", logFile);
-            return false;
-        }
-        struct MovieDesc { u32 sector; u32 size; };
-        MovieDesc movieDescs[18]{};
-        for (unsigned i = 0; i < 17u; ++i) {
-            u32 sec = 0, sz = 0, ident = 0;
-            decodeDesc(&elf[movieTableOff + i * 32u], sec, sz, ident);
-            const unsigned outIdx = (i == 0u) ? 16u : (i - 1u);
-            movieDescs[outIdx] = { sec, sz };
-        }
-        movieDescs[17] = { 0xC8F03u, 0xAB4004u };
 
         for (unsigned idx = 0; idx < 18u; ++idx) {
             if (hasValidCutscene(dir, int(idx))) continue;
@@ -1960,8 +2043,10 @@ bool CaneLauncherEnsureAssets3ds(const char* baseDir,
         return false;
     }
 
-    logLauncher(logFile, "On-console ISO extraction complete (%zu levels, %zu music, 7 banks, %zu dialogs, %u cutscenes)",
+    logLauncher(logFile, "On-console ISO extraction complete in %.1fs (%zu levels, %zu music, 7 banks, %zu dialogs, %u cutscenes)",
+                double(osGetTime() - extractStartMs) / 1000.0,
                 orderedTasks.size(), uniqueMusic.size(), dialogRows.size(), cutsceneCount);
+    logMemState(logFile, "after extraction");
     prog.pump("Vault ready", "Starting game...", 1, 1, 1, 1, 2, true);
     return true;
 }

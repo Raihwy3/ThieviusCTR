@@ -45,7 +45,7 @@ GeometrySummary BrxWalker::ReadGeom(CBinaryInputStream& stream) {
     if (edgesRead != geometry.edges)
         throw std::runtime_error("ReadGeom edge total differs from its header");
 
-    ++stats_.geometries;
+    if (!dryRun_) ++stats_.geometries;
     Trace("ReadGeom", begin, stream.GetOffset());
     return geometry;
 }
@@ -67,6 +67,6 @@ void BrxWalker::ReadBspc(CBinaryInputStream& stream,
             throw std::runtime_error("ReadBspc reference is out of range");
     }
 
-    stats_.bspNodes += count;
+    if (!dryRun_) stats_.bspNodes += count;
     Trace("ReadBspc", begin, stream.GetOffset());
 }

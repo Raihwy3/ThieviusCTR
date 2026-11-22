@@ -117,25 +117,29 @@ void BrxWalker::LoadOptionsFromBrx(CBinaryInputStream& s) {
         } else if (IsPackedColorOption(id)) {
             const auto colorBegin = s.GetOffset();
             const std::uint32_t rgba = s.U32Read();
-            const float rgbScale = id == 988 ? (1.0f / 128.0f) : (1.0f / 255.0f);
-            std::vector<std::uint8_t> replacement;
-            replacement.reserve(16);
-            AppendF32(replacement, std::min(static_cast<float>((rgba >> 0) & 0xff) * rgbScale, 1.0f));
-            AppendF32(replacement, std::min(static_cast<float>((rgba >> 8) & 0xff) * rgbScale, 1.0f));
-            AppendF32(replacement, std::min(static_cast<float>((rgba >> 16) & 0xff) * rgbScale, 1.0f));
-            AppendF32(replacement, static_cast<float>((rgba >> 24) & 0xff) / 255.0f);
-            RecordReplacement(colorBegin, s.GetOffset(), std::move(replacement));
+            if (!dryRun_) {
+                const float rgbScale = id == 988 ? (1.0f / 128.0f) : (1.0f / 255.0f);
+                std::vector<std::uint8_t> replacement;
+                replacement.reserve(16);
+                AppendF32(replacement, std::min(static_cast<float>((rgba >> 0) & 0xff) * rgbScale, 1.0f));
+                AppendF32(replacement, std::min(static_cast<float>((rgba >> 8) & 0xff) * rgbScale, 1.0f));
+                AppendF32(replacement, std::min(static_cast<float>((rgba >> 16) & 0xff) * rgbScale, 1.0f));
+                AppendF32(replacement, static_cast<float>((rgba >> 24) & 0xff) / 255.0f);
+                RecordReplacement(colorBegin, s.GetOffset(), std::move(replacement));
+            }
         } else if (IsNormalizedWorldLightingOption(id)) {
             const auto valueBegin = s.GetOffset();
             const float authoredValue = s.F32Read();
-            std::vector<std::uint8_t> replacement;
-            replacement.reserve(sizeof(float));
-            AppendF32(replacement, authoredValue * (1.0f / 255.0f));
-            RecordReplacement(valueBegin, s.GetOffset(), std::move(replacement));
+            if (!dryRun_) {
+                std::vector<std::uint8_t> replacement;
+                replacement.reserve(sizeof(float));
+                AppendF32(replacement, authoredValue * (1.0f / 255.0f));
+                RecordReplacement(valueBegin, s.GetOffset(), std::move(replacement));
+            }
         } else if (captureEmitOrigin_ && !emitOriginCaptured_ && (id==366 || id==421) && option.kind==OptionKind::Int16) {
             emitOriginKind_=s.S16Read(); emitOriginCaptured_=true;
         } else SkipOptionValue(s,option.kind);
-        ++stats_.options;
+        if (!dryRun_) ++stats_.options;
         havePrevious = true;
         previousId = id;
         previousStart = optionStart;
