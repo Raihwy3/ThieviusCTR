@@ -1,0 +1,88 @@
+ThieviusCTR (Nintendo 3DS port based on ProjectCane)
+https://github.com/Raihwy3/ThieviusCTR
+
+Original engine reconstruction and PC port:
+  theclub654 / ProjectCane and its contributors
+  https://github.com/theclub654/ProjectCane
+  Base revision: f77825d6bc9be3f795ead9d140b410fb9c9c22c1
+  License note: Upstream ProjectCane contains no root OSI license file in that
+  base revision; all upstream rights remain with their respective authors.
+  The native 3DS build reuses the world loader, gameplay, collision, animation,
+  render submissions, fonts, sound-bank parser, ADPCM decoder, effect scheduler,
+  MIDI/AME music sequencing, music envelopes, and BRX/dialogue extraction logic.
+
+On-hardware FMV decoding (FFmpeg 7.1.1 — LGPL v2.1 or later):
+  FFmpeg project — https://ffmpeg.org/
+  License: GNU Lesser General Public License v2.1 or later (included verbatim
+  in packages as LICENSE-FFmpeg-LGPL2.1.txt and tracked at
+  platform/3ds/LICENSE-FFmpeg-LGPL2.1.txt).
+  ThieviusCTR.3dsx statically links minimal LGPL builds of libavformat,
+  libavcodec, and libavutil configured with --disable-everything (enabling only
+  the bink, binkaudio_dct, binkaudio_rdft, and mpeg2video decoders; bink and
+  mpegvideo demuxers; and the mpegvideo parser) for real-time on-console Bink
+  (.bik) and PS2 MPEG-2 (.m2v) cutscene decoding via 3DS Y2R hardware conversion.
+  Includes a small patch to libavformat/bink.c (avio_skip for discarded
+  AVDISCARD_ALL audio tracks) applied automatically by
+  platform/3ds/build_ffmpeg_3ds.py. Per LGPL v2.1, full build and relinking
+  scripts (platform/3ds/build_ffmpeg_3ds.py and platform/3ds/build_runtime.py)
+  are provided in the repository so users can modify, rebuild, and relink FFmpeg.
+  Desktop host ffmpeg/ffprobe are also optionally used by PC asset-preparation
+  scripts (extract_all.py, extract_intro.py, convert_ps3_cutscenes.py).
+
+DSP firmware and audio library:
+  Cellenseres / OpenDSP (BSD 2-Clause License)
+  https://github.com/Cellenseres/OpenDSP
+  Revision: a15c8615c1659f34bfb2b38df69a9860f4cc7080
+  Vendored under platform/3ds/vendor/OpenDSP/ from Eyes of Gold's pinned copy.
+  License included as LICENSE-OpenDSP.txt. Per
+  platform/3ds/vendor/OpenDSP/firmware/mp3/NOTICE, MP3 tables and transform
+  dataflows derive from lieff/minimp3 (CC0):
+  https://github.com/lieff/minimp3/tree/ea99364f61c14656440e8d77e9c233ccf3124633
+  No proprietary Nintendo DSP firmware is included.
+
+Launcher, startup updater, and native PICA200 texture-coordinate reference:
+  Raihwy3 / eyes-of-gold (Eyes of Gold Launcher) and contributors (MIT License)
+  https://github.com/Raihwy3/eyes-of-gold
+  Reused and adapted its verified GitHub Release startup updater (update_core,
+  update_http, update_3ds, and host ASan/UBSan test harness), pinned OpenDSP
+  vendor copy, PICA200 texture-coordinate conventions, and dual-screen console
+  chrome design.
+
+Startup updater third-party dependencies:
+  - jsmn (MIT License) — https://github.com/zserge/jsmn
+    Vendored at platform/3ds/vendor/updater/jsmn.h (jsmn-LICENSE.txt).
+  - Mozilla CA certificate store (Mozilla Public License 2.0)
+    https://curl.se/docs/caextract.html — vendored as cacert.pem; MPL 2.0 text
+    included as LICENSE-Mozilla-MPL-2.0.txt.
+  - devkitPro 3ds-curl 8.4.0-1 (MIT / curl License), 3ds-mbedtls 2.28.8-1
+    (Apache-2.0 License), and 3ds-zlib / minizip 1.3.1-1 (zlib License).
+
+Nintendo 3DS toolchain & platform libraries:
+  devkitPro / devkitARM, libctru (zlib License), Citro3D (zlib License),
+  picasso, 3dsxtool, and smdhtool contributors.
+  https://github.com/devkitPro/libctru
+  https://github.com/devkitPro/citro3d
+
+3DS hardware Y2R reference projects:
+  Core-2-Extreme / Video_player_for_3DS
+  mockmodular / topos_3ds-video-player
+  Referenced while debugging real-hardware 3DS Y2R CDMA and transfer-end
+  event synchronization behavior (no code copied).
+
+Upstream desktop dependencies (Libraries/):
+  - GLM (MIT / Happy Bunny License; includes a small #ifdef __3DS__ newlib
+    integer typedef compatibility fix across 4 headers in Libraries/include/glm/)
+  - SDL2 (zlib License, Libraries/licenses/SDL2.txt)
+  - GLFW 3.3 (zlib/libpng License, Libraries/include/GLFW/glfw3.h)
+  - Dear ImGui (MIT License, Libraries/include/imgui/)
+  - nlohmann/json (MIT License, Libraries/include/nlohmann/json.hpp)
+  - stb (MIT / Public Domain, Libraries/include/stb/LICENSE)
+  - GLAD / Khronos headers (Libraries/include/glad/, Libraries/include/KHR/)
+  - Windows FFmpeg shared build (LGPL v3, Libraries/ffmpeg/ffmpeg-master-latest-win64-lgpl-shared/LICENSE.txt; desktop Windows builds only)
+
+Legal notice:
+  ThieviusCTR is an unofficial fan project and is not affiliated with or endorsed
+  by Sony Interactive Entertainment, Sucker Punch Productions, or Nintendo.
+  All game models, textures, levels, fonts, audio, and cutscenes come from the
+  user's own legally obtained copy of the game; none are included in the
+  repository or release packages.

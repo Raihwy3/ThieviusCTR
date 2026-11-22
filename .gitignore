@@ -1,0 +1,59 @@
+# Visual Studio
+.vs/
+**/x64/
+**/Debug/
+**/Release/
+**/bin/
+!Libraries/bin/
+!Libraries/bin/SDL2.dll
+**/obj/
+!Libraries/lib/Debug/
+!Libraries/lib/Debug/**
+!Libraries/lib/Release/
+!Libraries/lib/Release/**
+*.vcxproj.user
+*.aps
+*.obj
+*.pdb
+*.ilk
+*.iobj
+*.ipdb
+*.tlog
+*.exe
+*.suo
+*.VC.db
+*.VC.VC.opendb
+
+# Runtime/generated
+imgui.ini
+Saves/
+*.log
+*.bak
+build-output.txt
+build/
+dist/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+compile_commands.json
+.tools/
+.codex-tmp/
+Sly1-Release/*.csv
+Sly1-Release/*.dll
+
+# Extracted game data
+Sly1-Release/Worlds/
+Sly1-Release/Cutscenes/
+*.iso
+
+# Local extracted data for native 3DS development
+/Worlds/
+/Cutscenes/
+/local/
+
+/platform/3ds/vendor/OpenDSP/library/build/
+/platform/3ds/vendor/OpenDSP/library/lib/
+
+# Python
+__pycache__/
+*.pyc
