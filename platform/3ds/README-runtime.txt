@@ -6,6 +6,9 @@ original controller/collision/animation/scripting runtime, Citro3D renderer,
 OpenDSP/NDSP audio, and hardware-accelerated Y2R cutscene playback.
 
 Controls (default Swap B/A On, Camera Invert X On, Binoc Invert Y On):
+At the title, START resumes your last save. With no save yet, it opens the
+slot picker before starting a new game. SELECT opens New Game / Load Game.
+Save slots live in Saves/ and are kept when replacing the launcher files.
   Circle Pad: move
   C-stick: camera, where supported
   A: jump / accept in original menus

@@ -2,14 +2,14 @@
 """Run the built platform probe with local extracted worlds on an isolated SD."""
 from pathlib import Path
 import argparse,os,shutil,subprocess,sys,time
-parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--missing-scene',action='store_true');parser.add_argument('--runtime',action='store_true');parser.add_argument('--menu',action='store_true');parser.add_argument('--effects',action='store_true');parser.add_argument('--buttons',action='store_true');parser.add_argument('--features',action='store_true');parser.add_argument('--stereo-bottom',action='store_true');parser.add_argument('--skip-intro',action='store_true');parser.add_argument('--wait',type=float,default=15);args=parser.parse_args()
+parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--missing-scene',action='store_true');parser.add_argument('--runtime',action='store_true');parser.add_argument('--menu',action='store_true');parser.add_argument('--effects',action='store_true');parser.add_argument('--buttons',action='store_true');parser.add_argument('--features',action='store_true');parser.add_argument('--stereo-bottom',action='store_true');parser.add_argument('--skip-intro',action='store_true');parser.add_argument('--wait',type=float,default=15);parser.add_argument('--saves',action='store_true');parser.add_argument('--resume-save',action='store_true');args=parser.parse_args()
 if not 1 <= args.wait <= 55: parser.error('--wait must be between 1 and 55 seconds')
 ROOT=Path(__file__).resolve().parents[2];out=ROOT/('build/3ds/emulator-runtime' if args.runtime else 'build/3ds/emulator-missing' if args.missing_scene else 'build/3ds/emulator');out.mkdir(parents=True,exist_ok=True)
 if os.environ.get('THIEVIUS_PROBE_DIR'):
     out=Path(os.environ['THIEVIUS_PROBE_DIR']).resolve()
     out.mkdir(parents=True,exist_ok=True)
 if args.runtime:
-    shutil.rmtree(out/'data/azaharplus-emu/sdmc/3ds/ThieviusCTR/Saves',ignore_errors=True)
+    if not args.resume_save:shutil.rmtree(out/'data/azaharplus-emu/sdmc/3ds/ThieviusCTR/Saves',ignore_errors=True)
     for logname in ('runtime.log','runtime-stderr.log'):
         (out/'data/azaharplus-emu/sdmc/3ds/ThieviusCTR'/logname).unlink(missing_ok=True)
 sdmc_root=out/'data/azaharplus-emu/sdmc/3ds/ThieviusCTR'
@@ -106,7 +106,46 @@ with (out/'xvfb.log').open('w') as xlog,(out/'azahar.log').open('w') as log:
         windows=subprocess.check_output(['xdotool','search','--onlyvisible','--class','[Aa]zahar.*'],env=env,text=True).split()
         if windows:
             subprocess.run(['xdotool','windowfocus',windows[-1]],env=env,check=True)
-            if args.menu:
+            if args.saves:
+                import re,struct
+                def tap(key):
+                    subprocess.run(['xdotool','keydown',key],env=env,check=True);time.sleep(.15)
+                    subprocess.run(['xdotool','keyup',key],env=env,check=True);time.sleep(1)
+                def snap(name):subprocess.run(['import','-window','root',str(out/(name+'.png'))],env=env,check=True)
+                slot=sdmc_root/'Saves/slot1.sav'
+                if args.resume_save:
+                    before_resume=slot.read_bytes()
+                resume_log_start=len(runtime_log.read_text())
+                tap('m');snap('save-start')
+                if not args.resume_save:
+                    if slot.exists():raise RuntimeError('START created a save without selecting a slot')
+                    tap('a')
+                    if not slot.exists():raise RuntimeError('New slot was not written')
+                else:
+                    if slot.read_bytes()!=before_resume:raise RuntimeError('START reset the existing save')
+                for _ in range(180):
+                    text=runtime_log.read_text()[resume_log_start:]
+                    states=re.findall(r'ui=(\d+)',text)
+                    dialogs=re.findall(r'binoc=(\d+) dialog=(-?\d+)',text)
+                    if len(states)>=3 and all(v=='3' for v in states[-3:]) and len(dialogs)>=3 and all(v==('0','-1') for v in dialogs[-3:]) and (args.resume_save or any(v!=('0','-1') for v in dialogs)):break
+                    if not args.resume_save:tap('a')
+                    else:time.sleep(1)
+                else:raise RuntimeError('Saved game did not reach gameplay')
+                before=slot.read_bytes()
+                tap('m');tap('g');tap('a');snap('save-game-options')
+                tap('g');tap('a');snap('save-existing-slot')
+                tap('a');tap('f');tap('a');time.sleep(1);snap('save-overwrite')
+                # The first manual save explains automatic saving.
+                tap('a');time.sleep(1)
+                after=slot.read_bytes()
+                if before==after:raise RuntimeError('Overwrite did not persist updated progress')
+                magic,version,size,checksum=struct.unpack('<8sIII',after[:20])
+                value=2166136261
+                for byte in after[20:]:value=((value^byte)*16777619)&0xffffffff
+                assert magic==b'PCANESAV' and version==3 and size==len(after)-20 and value==checksum
+                if slot.with_suffix('.sav.bak').exists():raise RuntimeError('Completed save left a backup behind')
+                print('PASS START '+('resumes existing slot' if args.resume_save else 'chooses a persistent new slot')+', manual overwrite and save checksum',flush=True)
+            elif args.menu:
                 swap_on=(initial_swap=='On')
                 def confirm_key():
                     return 'a' if swap_on else 's'
@@ -215,7 +254,7 @@ with (out/'xvfb.log').open('w') as xlog,(out/'azahar.log').open('w') as log:
                     else:
                         tap('g');tap('g');tap(confirm_key());time.sleep(2)
                     subprocess.run(['import','-window','root',str(out/'options-after-submenus.png')],env=env,check=True)
-                tap('z');tap('m');time.sleep(4)
+                tap('z');tap('m');tap(confirm_key());time.sleep(4)
                 subprocess.run(['import','-window','root',str(out/'menu-start.png')],env=env,check=True)
                 time.sleep(8)
                 subprocess.run(['import','-window','root',str(out/'paris-after-menu.png')],env=env,check=True)
@@ -233,10 +272,11 @@ with (out/'xvfb.log').open('w') as xlog,(out/'azahar.log').open('w') as log:
                     subprocess.run(['import','-window','root',str(out/'exit-confirm.png')],env=env,check=True)
                     tap('f');tap(confirm_key());time.sleep(3)
                 else:tap('n+m');time.sleep(2)
-            if args.runtime and not args.menu:
+            if args.runtime and not args.menu and not args.saves:
                 # Enter gameplay through the title and retail in-world camera transition.
                 subprocess.run(['xdotool','keydown','m'],env=env,check=True);time.sleep(.2)
-                subprocess.run(['xdotool','keyup','m'],env=env,check=True);time.sleep(4)
+                subprocess.run(['xdotool','keyup','m'],env=env,check=True);time.sleep(1)
+                subprocess.run(['xdotool','key','a'],env=env,check=True);time.sleep(4)
                 subprocess.run(['import','-window','root',str(out/'intro.png')],env=env,check=True)
                 time.sleep(4)
                 # The first run now plays the genuine opening conversation.
@@ -346,5 +386,5 @@ with (out/'xvfb.log').open('w') as xlog,(out/'azahar.log').open('w') as log:
             except subprocess.TimeoutExpired:emulator.kill();emulator.wait()
         if x.poll() is None:x.terminate();x.wait(timeout=5)
 
-if args.runtime and not args.menu:
+if args.runtime and not args.menu and not args.saves:
     subprocess.run([sys.executable,str(ROOT/'platform/3ds/check_runtime_log.py'),str(out/'data/azaharplus-emu/sdmc/3ds/ThieviusCTR/runtime.log')],check=True)

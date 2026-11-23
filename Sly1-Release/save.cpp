@@ -21,6 +21,7 @@
 #ifdef __3DS__
 #include <cerrno>
 #include <sys/stat.h>
+#include "../platform/3ds/save_storage.inc"
 #endif
 
 namespace
@@ -642,8 +643,13 @@ bool WriteSaveSlot(int slot, const GS& save)
     if (!stream)
         return false;
     stream.close();
+    if (!stream) return false;
 
+#ifdef __3DS__
+    return cane_save3ds::Replace(temporary.string(), path.string());
+#else
     return cane::AtomicReplace(temporary, path);
+#endif
 }
 
 bool ReadSaveSlot(int slot, GS* save, VIDEOSAVESETTINGS* legacyVideo, bool* hasLegacyVideo)
@@ -651,6 +657,9 @@ bool ReadSaveSlot(int slot, GS* save, VIDEOSAVESETTINGS* legacyVideo, bool* hasL
     if (save == nullptr || legacyVideo == nullptr || hasLegacyVideo == nullptr)
         return false;
 
+#ifdef __3DS__
+    if (!cane_save3ds::Recover(SaveSlotPath(slot).string())) return false;
+#endif
     std::ifstream stream(SaveSlotPath(slot), std::ios::binary);
     SaveFileHeader header{};
     if (!stream.read(reinterpret_cast<char*>(&header), sizeof(header)) ||
@@ -712,6 +721,9 @@ bool LoadSystemSettings(VIDEOSAVESETTINGS* settings)
     if (settings == nullptr)
         return false;
 
+#ifdef __3DS__
+    if (!cane_save3ds::Recover(SystemSettingsPath().string())) return false;
+#endif
     std::ifstream stream(SystemSettingsPath(), std::ios::binary);
     SettingsFileHeader header{};
     if (!stream.read(reinterpret_cast<char*>(&header), sizeof(header)) ||
@@ -962,8 +974,13 @@ bool SaveSystemSettings()
     if (!stream)
         return false;
     stream.close();
+    if (!stream) return false;
 
+#ifdef __3DS__
+    return cane_save3ds::Replace(temporary.string(), path.string());
+#else
     return cane::AtomicReplace(temporary, path);
+#endif
 }
 
 void StartupSaveBlot(SAVEBLOT* psaveblot)
@@ -1168,6 +1185,11 @@ bool DeleteSaveSlotFromDisk(SAVEDATA* psaveData, int slot)
 
     std::error_code ec;
     const std::filesystem::path path = SaveSlotPath(slot);
+#ifdef __3DS__
+    // Do not let recovery resurrect a deliberately erased slot.
+    const std::string backup = path.string() + ".bak";
+    if (std::remove(backup.c_str()) != 0 && errno != ENOENT) return false;
+#endif
     std::filesystem::remove(path, ec);
 
     // A missing file already represents an empty slot, so only an actual

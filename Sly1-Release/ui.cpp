@@ -287,6 +287,16 @@ void UpdateUi(UI* pui)
         else if (pjoy->IsPressed(BTN_START))
         {
             pjoy->SetHandled(BTN_START);
+#ifdef __3DS__
+            // Starting without a slot used to launch an unsaved Paris run.
+            // Choose a persistent slot before creating a new game instead.
+            if (g_saveData.pgsAttractSave == nullptr) {
+                SetSaveManagerState(&g_saveData, SAVE_MENU_STATE_Selecting);
+                SetPrompt(&g_prompt, PRP_Basic, PRK_MemcardChooseNewSlot);
+                uis = pui->uis;
+                break;
+            }
+#endif
             g_saveData.pgsCurrentSave = g_saveData.pgsAttractSave;
 
             if (g_saveData.pgsAttractSave != nullptr)

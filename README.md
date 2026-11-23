@@ -180,6 +180,9 @@ The bottom screen shows the original coin counter at the upper left and health/l
 
 ## Saves, Settings & Troubleshooting
 
+START at the title resumes your last save. If none exists, choose a slot to
+start a new game. SELECT opens the New Game and Load Game options.
+
 Inside `sd:/3ds/ThieviusCTR/`:
 
 - `Saves/` — in-game save files

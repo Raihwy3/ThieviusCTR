@@ -389,6 +389,10 @@ PRD& PrdPrompt(PRK prk)
 const char* PchzPromptTitle(PRK prk, const PRD& prd)
 {
 #ifdef __3DS__
+    if(prk==PRK_Unknown15 || prk==PRK_MemcardCreateError)
+        return "Could not save to the SD card.\nCheck free space and try again.\nYour previous save has been kept.";
+    if(prk==PRK_MemcardAutoNotify)
+        return "Progress will be saved automatically\nto the selected slot on your SD card.\nDo not remove it while saving.";
     if(prk==PRK_NativeDisplayMenu)return "Display";
     if(prk==PRK_VideoMenu)return "Graphics";
     if(prk==PRK_NativeBottom)return "Bottom screen";
