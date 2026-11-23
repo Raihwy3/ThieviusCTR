@@ -26,6 +26,9 @@
 #include <cstdio>
 #include <cstring>
 #include <stdexcept>
+#if defined(__3DS__)
+#include <chrono>
+#endif
 #include "jump.h"
 #include "pipe.h"
 #include "keyhole.h"
@@ -733,6 +736,17 @@ void CreateSwPrizes(SW* psw)
 
 void LoadSwFromBrx(SW* psw, CBinaryInputStream* pbis)
 {
+#if defined(__3DS__)
+    auto loadTick = std::chrono::steady_clock::now();
+    auto loadStage = [&](const char* name) {
+        const auto now = std::chrono::steady_clock::now();
+        std::fprintf(stderr, "World load stage: %s=%lld ms\n", name,
+            static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(now-loadTick).count()));
+        loadTick = now;
+    };
+#else
+    auto loadStage = [](const char*) {};
+#endif
 	auto reportPendingGlErrors = [](const char* stage)
 	{
 		for (GLenum error = glGetError(); error != GL_NO_ERROR; error = glGetError())
@@ -826,9 +840,19 @@ void LoadSwFromBrx(SW* psw, CBinaryInputStream* pbis)
 	}
 	// Loads all textures and shader data from file
 	LoadShadersFromBrx(pbis);
+	loadStage("headers/shaders");
 	reportPendingGlErrors("LoadShadersFromBrx");
 	// Loads all the scene world objects from the binary file
+#if defined(__3DS__)
+    extern void CaneResetModelLoadStats3ds();
+    extern void CaneReportModelLoadStats3ds();
+    CaneResetModelLoadStats3ds();
+#endif
 	LoadSwObjectsFromBrx(psw, nullptr, pbis);
+#if defined(__3DS__)
+    CaneReportModelLoadStats3ds();
+#endif
+	loadStage("objects");
 	reportPendingGlErrors("LoadSwObjectsFromBrx");
 
 	if (FIsDlEmpty(&psw->dlLight) == true)
@@ -843,10 +867,12 @@ void LoadSwFromBrx(SW* psw, CBinaryInputStream* pbis)
 	std::cout << "Loading Textures...\n";
 	// Loads textures from binary file
 	LoadTexturesFromBrx(pbis);
+	loadStage("texture reads");
 	// Bind/post-load callbacks can immediately start world ambience, so the
 	// requested effects bank must already be resident at this point.
 	if (psw->ibnk >= 0)
 		SbpEnsureBank(psw->ibnk, psw->soundBankFileName.data());
+	loadStage("sound bank");
 
 	CreateSwPrizes(psw);
 	ProcessSwCallbacks(psw);
@@ -960,6 +986,7 @@ void LoadSwFromBrx(SW* psw, CBinaryInputStream* pbis)
 	PostUiLoad(&g_ui);
 	StartMusidSong(psw->musid, psw->musicFileName.data());
 	StartSwIntermittentSounds(psw);
+	loadStage("bind/setup/music");
 	std::cout << "World Loaded Successfully\n";
 }
 

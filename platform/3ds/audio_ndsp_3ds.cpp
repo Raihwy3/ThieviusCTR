@@ -931,8 +931,14 @@ SoundBankPtr SbpEnsureBank(int index, const char*) {
     if (!input) return nullptr;
     auto bank = std::make_unique<EFFECTBANK>();
     bank->ibnk = index;
-    bank->bytes.assign(std::istreambuf_iterator<char>(input), {});
-    if (bank->bytes.size() > 8 * 1024 * 1024 || !Parse989SfxBank(*bank)) return nullptr;
+    // Read once into a correctly sized allocation instead of growing a vector
+    // through a byte iterator (including for invalid, oversized files).
+    input.seekg(0, std::ios::end);
+    const auto length = input.tellg();
+    if (length <= 0 || length > 8 * 1024 * 1024) return nullptr;
+    input.seekg(0, std::ios::beg);
+    bank->bytes.resize(static_cast<size_t>(length));
+    if (!input.read(reinterpret_cast<char*>(bank->bytes.data()), length) || !Parse989SfxBank(*bank)) return nullptr;
     std::vector<uint8_t>().swap(bank->bytes);
     banks[index] = std::move(bank);
     return banks[index].get();

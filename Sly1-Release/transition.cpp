@@ -204,6 +204,21 @@ std::filesystem::path LevelPath(const LEVELINFO& levelInfo, const std::string& c
 
 }
 
+#if defined(__3DS__)
+void CanePrefetchLevel3ds(LEVELINFO* level,const std::string& currentFile) {
+    if(!level)return;
+    static LEVELINFO* previous=nullptr;
+    static std::string previousFile,path;
+    try {
+        if(previous!=level || previousFile!=currentFile) {
+            auto resolved=LevelPath(*level,currentFile).string();
+            previousFile=currentFile;path=std::move(resolved);previous=level;
+        }
+        CanePrefetchWorld3ds(path);
+    }catch(const std::exception&) {previous=nullptr;} // optional I/O, normal load still handles errors
+}
+#endif
+
 void CTransition::ResetWorld(int nParam)
 {
     SetMasterVolume(0.0f);

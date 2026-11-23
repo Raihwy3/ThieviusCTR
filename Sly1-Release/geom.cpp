@@ -30,6 +30,7 @@ void ReadGeom(GEOM *pgeom, CBinaryInputStream *pbis)
     pgeom->aedge.assign(pgeom->cedge, EDGE{});
 
     pgeom->indices.clear();
+    pgeom->indices.reserve(static_cast<size_t>(pgeom->cedge)*2);
 
     int edgeIndex = 0;
 

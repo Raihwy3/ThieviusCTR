@@ -1,4 +1,42 @@
 #include "bis.h"
+#include <algorithm>
+#if defined(__3DS__)
+#include <cstdio>
+#include <vector>
+#include <sys/stat.h>
+namespace {
+struct WorldReadAhead {
+    std::string path;
+    std::vector<byte> bytes;
+    size_t ready=0;
+    struct stat identity{};
+    FILE* input=nullptr;
+    CBinaryInputStream* consumer=nullptr;
+    ~WorldReadAhead() {if(input)std::fclose(input);}
+    void clear() {
+        if(input)std::fclose(input);
+        input=nullptr;consumer=nullptr;ready=0;path.clear();std::vector<byte>().swap(bytes);
+    }
+} worldReadAhead;
+}
+void CanePrefetchWorld3ds(const std::string& path) {
+    auto& ahead=worldReadAhead;
+    if(ahead.path!=path) {
+        ahead.clear();ahead.path=path;
+        if(stat(path.c_str(),&ahead.identity)!=0 || ahead.identity.st_size<=0)return;
+        try {ahead.bytes.resize(std::min<size_t>(512*1024,size_t(ahead.identity.st_size)));}
+        catch(const std::bad_alloc&) {return;} // optional under memory pressure
+        ahead.input=std::fopen(path.c_str(),"rb");
+        if(ahead.input)std::setvbuf(ahead.input,nullptr,_IONBF,0);
+    }
+    if(!ahead.input || ahead.ready==ahead.bytes.size())return;
+    // One bounded read per rendered exit-animation frame, never a second world.
+    const auto n=std::min<size_t>(64*1024,ahead.bytes.size()-ahead.ready);
+    const auto got=std::fread(ahead.bytes.data()+ahead.ready,1,n,ahead.input);
+    ahead.ready+=got;
+    if(got!=n || ahead.ready==ahead.bytes.size()) {std::fclose(ahead.input);ahead.input=nullptr;}
+}
+#endif
 
 CBinaryInputStream::CBinaryInputStream()
 {
@@ -13,6 +51,12 @@ void CBinaryInputStream::OpenFile(const std::string& filePath)
 {
     Close();
 
+#if defined(__3DS__)
+    // Large sequential reads amortize SD service calls across scalar BRX fields.
+    if (!m_fileBuffer) m_fileBuffer = std::make_unique<char[]>(128 * 1024);
+    // ReadBytes owns the read-ahead window. Avoid a second iostream buffer.
+    file.rdbuf()->pubsetbuf(nullptr, 0);
+#endif
     file.open(filePath, std::ios::in | std::ios::binary);
 
     if (!file.is_open())
@@ -24,6 +68,24 @@ void CBinaryInputStream::OpenFile(const std::string& filePath)
     m_pb = nullptr;
     m_cb = 0;
     m_ib = 0;
+#if defined(__3DS__)
+    file.seekg(0, std::ios::end);
+    const auto end = file.tellg();
+    if (end < 0) throw std::runtime_error("Failed to query binary input file size");
+    m_fileSize = static_cast<std::size_t>(end);
+    file.seekg(0, std::ios::beg);
+    m_cb = m_fileSize; // empty read-ahead window; m_cb is its file offset
+    auto& ahead=worldReadAhead;
+    if(ahead.path==filePath) {
+        if(ahead.input) {std::fclose(ahead.input);ahead.input=nullptr;}
+        struct stat current{};
+        if(stat(filePath.c_str(),&current)==0 && current.st_size==ahead.identity.st_size &&
+           current.st_mtime==ahead.identity.st_mtime && current.st_ctime==ahead.identity.st_ctime && ahead.ready) {
+            ahead.consumer=this;
+            std::fprintf(stderr,"World prefetch: %lu KiB ready\n",static_cast<unsigned long>(ahead.ready/1024));
+        } else ahead.clear();
+    }
+#endif
 }
 
 void CBinaryInputStream::OpenMemory(int cb, const void* pv)
@@ -67,6 +129,33 @@ void CBinaryInputStream::ReadBytes(
                 throw std::runtime_error("CBinaryInputStream file is not open");
             }
 
+#if defined(__3DS__)
+            if (m_ib > m_fileSize || cb > m_fileSize-m_ib)
+                throw std::runtime_error("Unexpected end of binary input file");
+            auto* output=static_cast<byte*>(destination);
+            while(cb) {
+                const auto windowSize=std::min<std::size_t>(128*1024,m_fileSize-m_cb);
+                if(m_ib<m_cb || m_ib-m_cb>=windowSize) {
+                    // One SD/iostream operation serves many scalar fields.
+                    file.clear();file.seekg(static_cast<std::streamoff>(m_ib),std::ios::beg);
+                    m_cb=m_ib;
+                    const auto refill=std::min<std::size_t>(128*1024,m_fileSize-m_cb);
+                    if(worldReadAhead.consumer==this && m_ib<=worldReadAhead.ready && refill<=worldReadAhead.ready-m_ib) {
+                        std::memcpy(m_fileBuffer.get(),worldReadAhead.bytes.data()+m_ib,refill);
+                    } else {
+                        file.read(m_fileBuffer.get(),static_cast<std::streamsize>(refill));
+                        if(file.gcount()!=static_cast<std::streamsize>(refill))
+                            throw std::runtime_error("Unexpected end of binary input file");
+                    }
+                }
+                const auto offset=m_ib-m_cb;
+                const auto available=std::min<std::size_t>(128*1024,m_fileSize-m_cb)-offset;
+                const auto count=std::min(cb,available);
+                std::memcpy(output,m_fileBuffer.get()+offset,count);
+                output+=count;m_ib+=count;cb-=count;
+            }
+            if(worldReadAhead.consumer==this && m_ib>=worldReadAhead.ready)worldReadAhead.clear();
+#else
             if (cb > static_cast<std::size_t>(std::numeric_limits<std::streamsize>::max()))
                 throw std::length_error("CBinaryInputStream read is too large");
 
@@ -78,6 +167,7 @@ void CBinaryInputStream::ReadBytes(
             {
                 throw std::runtime_error("Unexpected end of binary input file");
             }
+#endif
 
             break;
         }
@@ -115,6 +205,11 @@ std::size_t CBinaryInputStream::GetOffset()
                 "CBinaryInputStream file is not open");
         }
 
+#if defined(__3DS__)
+        // All stream access goes through this class. Avoid tellg/seekoff for
+        // every object alignment and descriptor while parsing the world.
+        return m_ib;
+#else
         const std::streampos position = file.tellg();
 
         if (position == std::streampos(-1))
@@ -133,6 +228,7 @@ std::size_t CBinaryInputStream::GetOffset()
         }
 
         return static_cast<std::size_t>(offset);
+#endif
     }
 
     case BISK_Mem:
@@ -174,9 +270,7 @@ void CBinaryInputStream::Align(int n)
                     "Binary input alignment is too large");
             }
 
-            file.seekg(
-                static_cast<std::streamoff>(padding),
-                std::ios::cur);
+            Seek(position + padding);
 
             if (!file)
             {
@@ -413,6 +507,9 @@ std::shared_ptr<char[]> CBinaryInputStream::ReadFixedString32()
 
 void CBinaryInputStream::Close()
 {
+#if defined(__3DS__)
+    if(worldReadAhead.consumer==this)worldReadAhead.clear();
+#endif
     if (file.is_open())
         file.close();
 
@@ -437,6 +534,9 @@ std::size_t CBinaryInputStream::GetSize()
     if (m_bisk != BISK_File || !file.is_open())
         return 0;
 
+#if defined(__3DS__)
+    return m_fileSize;
+#else
     const std::streampos position = file.tellg();
     file.clear();
     file.seekg(0, std::ios::end);
@@ -444,6 +544,7 @@ std::size_t CBinaryInputStream::GetSize()
     if (position >= 0)
         file.seekg(position);
     return end >= 0 ? static_cast<std::size_t>(end) : 0;
+#endif
 }
 
 std::size_t CBinaryInputStream::Remaining()
@@ -462,10 +563,16 @@ void CBinaryInputStream::Seek(std::size_t offset)
             throw std::runtime_error("CBinaryInputStream file is not open");
         if (offset > static_cast<std::size_t>((std::numeric_limits<std::streamoff>::max)()))
             throw std::length_error("Binary input seek is too large");
+#if defined(__3DS__)
+        // Keep the read-ahead window even across backward seeks within it.
+        // The next read refills only if the requested bytes are outside it.
+        m_ib=offset;
+#else
         file.clear();
         file.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
         if (!file)
             throw std::runtime_error("Failed to seek binary input file");
+#endif
         break;
 
     case BISK_Mem:

@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <pattern id="scanlines" width="256" height="16" patternUnits="userSpaceOnUse">
+      <rect y="12" width="256" height="4" fill="#000" fill-opacity=".24"/>
+    </pattern>
+  </defs>
+  <rect width="256" height="256" fill="#000"/>
+  <rect x="8" y="8" width="240" height="240" rx="12" fill="none" stroke="#78c9f2" stroke-width="8"/>
+  <path d="M62 49h132v35h-47v91h-38V84H62z" fill="#f1c735"/>
+  <path d="M62 49h132v35h-47v91h-38V84H62z" fill="none" stroke="#ed4b71" stroke-width="3" opacity=".25" transform="translate(-3 0)"/>
+  <path d="M62 49h132v35h-47v91h-38V84H62z" fill="none" stroke="#53d9ed" stroke-width="3" opacity=".25" transform="translate(3 0)"/>
+  <text x="128" y="219" text-anchor="middle" fill="#fff" font-family="DejaVu Sans, sans-serif" font-size="27" font-weight="700" letter-spacing="3">CTR</text>
+  <rect x="12" y="12" width="232" height="232" rx="8" fill="url(#scanlines)"/>
+</svg>

@@ -6,22 +6,24 @@ static bool caneCameraInvertX=true;
 static bool caneCameraInvertY=false;
 static bool caneBinocInvertX=false;
 static bool caneBinocInvertY=true;
-static int caneDisplayMode=0; // Native, Wide, 3D, SSAA, PICA spatial AA, PICA sharpen, 3D 2x vertical
+static int caneDisplayMode=2; // Native, Wide, 3D, SSAA, PICA spatial AA, PICA sharpen, 3D 2x vertical
 static bool caneBottomCoins=true,caneBottomHealth=true,caneBottomMonitor=false;
+static bool caneBottomBottles=false;
 bool CaneBottomCoins3ds() {return caneBottomCoins;}
 bool CaneBottomHealth3ds() {return caneBottomHealth;}
+bool CaneBottomBottles3ds() {return caneBottomBottles;}
 bool CaneBottomMonitor3ds() {return caneBottomMonitor;}
 static bool caneIntroSeen=false,caneSkipIntro=false;
 bool CaneSkipIntro3ds() {return caneIntroSeen && caneSkipIntro;}
 bool CaneIntroSeen3ds() {return caneIntroSeen;}
-static int caneRenderCap=60;
+static int caneRenderCap=30;
 static int caneStereoStrength=100;
 static int caneStereoConvergence=100;
 static int caneStereoPopout=100;
 static int caneStereoHud=50;
 static bool caneStereoAuto=true;
 int CaneStereoOption3ds(int index) {switch(index){case 0:return caneDisplayMode==2 || caneDisplayMode==6;case 1:return caneStereoStrength;case 2:return caneStereoAuto;case 3:return caneStereoConvergence;case 4:return caneStereoPopout;default:return caneStereoHud;}}
-static bool caneGyroEnabled=false;
+static bool caneGyroEnabled=true;
 static int caneGyroSensitivity=100;
 static bool caneLowShadowDetail=false;
 int CaneDisplayMode3ds() {return caneDisplayMode;}
@@ -50,6 +52,7 @@ void CaneLoadNativeOptions3ds() {
             else if(std::strcmp(key,"display_mode")==0 && value>=0 && value<=6)caneDisplayMode=value;
             else if(std::strcmp(key,"bottom_coins")==0 && value>=0 && value<=1)caneBottomCoins=value;
             else if(std::strcmp(key,"bottom_health")==0 && value>=0 && value<=1)caneBottomHealth=value;
+            else if(std::strcmp(key,"bottom_bottles")==0 && value>=0 && value<=1)caneBottomBottles=value;
             else if(std::strcmp(key,"bottom_monitor")==0 && value>=0 && value<=1)caneBottomMonitor=value;
             else if(std::strcmp(key,"intro_seen")==0 && value>=0 && value<=1)caneIntroSeen=value;
             else if(std::strcmp(key,"skip_intro")==0 && value>=0 && value<=1)caneSkipIntro=value;
@@ -84,6 +87,7 @@ static bool CaneSaveNativeOptions3ds() {
             caneDisplayMode,caneRenderCap,caneStereoStrength,int(caneGyroEnabled),caneGyroSensitivity,int(caneLowShadowDetail))>0;
         written=written && std::fprintf(file,"stereo_convergence %d\nstereo_popout %d\nstereo_hud %d\nstereo_auto %d\n",caneStereoConvergence,caneStereoPopout,caneStereoHud,int(caneStereoAuto))>0;
         written=written && std::fprintf(file,"bottom_coins %d\nbottom_health %d\nbottom_monitor %d\n",int(caneBottomCoins),int(caneBottomHealth),int(caneBottomMonitor))>0;
+        written=written && std::fprintf(file,"bottom_bottles %d\n",int(caneBottomBottles))>0;
         written=written && std::fprintf(file,"intro_seen %d\nskip_intro %d\n",int(caneIntroSeen),int(caneSkipIntro))>0;
         bool closed=std::fclose(file)==0;
         if(written && closed)saved=std::rename(temp,path)==0;
@@ -120,8 +124,21 @@ void CaneSetBinocInvertY3ds(bool enabled) {
     std::fprintf(stderr,"Binoc Invert Y: %s (saved=%d)\n",enabled?"On":"Off",int(saved));
 }
 
-void CaneCycleDisplayMode3ds(int direction) {caneDisplayMode=(caneDisplayMode+(direction<0?6:1))%7;CaneSaveNativeOptions3ds();}
+void CaneCycleDisplayMode3ds(int direction) {
+    // Retain filter implementations/config IDs, but hide the experimental
+    // PICA-SR choices from the user-facing display selector for now.
+    constexpr int visible[]={0,1,2,3,6};
+    int index=-1;
+    for(int i=0;i<5;++i)if(visible[i]==caneDisplayMode)index=i;
+    caneDisplayMode=index<0?(direction<0?3:6):visible[(index+(direction<0?4:1))%5];
+    CaneSaveNativeOptions3ds();
+}
 void CaneToggleBottomOption3ds(int option) {if(option==0)caneBottomCoins=!caneBottomCoins;else if(option==1)caneBottomHealth=!caneBottomHealth;else caneBottomMonitor=!caneBottomMonitor;CaneSaveNativeOptions3ds();}
+void CaneCycleBottomRight3ds(int direction) {
+    int state=caneBottomHealth?(caneBottomBottles?2:1):0;
+    state=(state+(direction<0?2:1))%3;
+    caneBottomHealth=state!=0;caneBottomBottles=state==2;CaneSaveNativeOptions3ds();
+}
 void CaneAdjustStereoOption3ds(int index,int direction) {
     const int step=direction<0?-1:1;
     switch(index) {

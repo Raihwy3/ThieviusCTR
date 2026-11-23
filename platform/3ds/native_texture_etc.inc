@@ -220,6 +220,10 @@ struct PreparedTexture {unsigned width=0,height=0;std::vector<uint8_t> data;};
 using PreparedImage=std::array<PreparedTexture,2>;
 static bool loadBundle(const char* path,uint64_t fingerprint,std::vector<PreparedImage>& images) {
     FILE* file=std::fopen(path,"rb");if(!file)return false;
+    // Bundle records are small; coalesce their headers and pixel payloads
+    // instead of issuing a separate SD read for each cached texture.
+    std::vector<char> readBuffer(128*1024);
+    std::setvbuf(file,readBuffer.data(),_IOFBF,readBuffer.size());
     uint64_t header[4]{};
     bool ok=std::fread(header,1,sizeof header,file)==sizeof header && header[0]==0x3154455443545255ull &&
         header[1]==fingerprint && header[2]==images.size() && header[3]<=images.size()*2;

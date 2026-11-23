@@ -24,23 +24,26 @@ well as displayed B/A or X/O icons), Camera Invert X/Y (X defaults On) and
 Binoc Invert X/Y (Y defaults On). Left/Right or accept changes these
 settings; native-options.cfg saves them between launches.
 Graphics also offers normal 400x240, 800x240 2D, per-eye stereoscopic 3D,
-800x480 internal supersampling, PICA-SR edge AA, or PICA-SR sharpening, plus
+800x480 internal supersampling, plus
 Original/Low shadow detail and a separate 3D settings page (enable, strength,
 automatic convergence, convergence distance, pop-out limit and HUD depth).
 Automatic convergence follows the camera-to-Sly distance; disabling it uses
 a fixed reference distance. These display/filter modes are
-mutually exclusive. The 3D slider controls depth;
+mutually exclusive. PICA-SR edge-AA/sharpening remain implemented but are hidden
+from the selector for now. The 3D slider controls depth;
 closing it skips the second eye draw. Unsupported modes fall back to 400x240;
 the emulator also falls back for 800x240 because its wide output is cropped.
-Cutscene playback keeps its existing settings.
+Fresh configurations default to normal stereoscopic 3D and a 30 FPS cap.
+Saved settings take precedence. Cutscene playback keeps its existing settings.
 Display also includes 3D (400x480/eye), which renders twice the vertical
 resolution per eye and downsamples to the panel. This uses more GPU time
 and VRAM than normal 3D. Texture storage is relocated when needed to make
 room for both eyes; if those larger targets cannot fit, normal 3D is retained.
 Graphics > Display groups the display mode and frame cap. Graphics also has
 separate 3D settings and Bottom screen submenus.
-Graphics > Bottom screen has separate Coins and Health / lives switches.
+Graphics > Bottom screen has a Coins switch and Right counter: Off/Lives/Bottles.
 These keep counters visible at the upper corners of the bottom screen.
+Bottles shows the original bottle count/icon; bottle-free levels show 0/0.
 The game's original animated top-screen counter pop-ups still work.
 Portrait conversations and gameplay instructions use the bottom screen,
 with text above the animated character windows and one dialogue frame.
@@ -54,7 +57,7 @@ Turn it Off to watch the intro again. Mission cutscenes are unaffected.
 Loading... appears in the game's font at the bottom right during level loads.
 Controls > Gyro aiming adds motion to binocular/sniper aiming without replacing
 stick input. It has its own 25-400% sensitivity and calibration (keep still for
-about 1.5 seconds). Gyro is Off by default. These new display/gyro options
+about 1.5 seconds). Gyro is On by default. These new display/gyro options
 have emulator/host checks; their physical feel still needs console testing.
 Existing ETC1 world-texture caches can be loaded with a 3 MiB VRAM texture budget.
 Transparent textures and fonts/UI retain their existing formats. Prepared
@@ -62,6 +65,25 @@ texture caches live under Cache/Textures/ on your SD card, not in release ZIPs.
 Missing caches use the original textures immediately. Synchronous startup
 encoding is disabled so fresh ISO installations do not stall before movies.
 No texture encoding or cache-file reads run in the draw path.
+Level loading uses a 128 KiB BRX read buffer and preserves read-ahead across
+adjacent texture payloads. Stream offsets and file sizes are tracked directly
+to avoid repeated filesystem position queries. Prepared texture bundles also
+use a 128 KiB read buffer. Sound banks are read in one bounded allocation;
+parsed banks and the existing decoded sound cache survive level changes.
+If no prepared texture bundles exist, their pixel fingerprint pass is skipped.
+Existing bundles get a small lookup index keyed by source path, file size,
+timestamps and texture descriptors, avoiding repeated full pixel hashing.
+Changed source files invalidate the index. Runtime stderr includes per-stage
+world-loading timings and the first draw's texture/mesh preparation time.
+Model vertices, triangles, poses and cel outlines use batched wire-format reads.
+The native loader skips temporary desktop mesh packing and moves completed
+outline arrays into their owners. Collision index arrays reserve their known
+size up front. Converted font/button sheets can be reused across levels within
+a 640 KiB RAM cap; this cache contains no live world-object pointers.
+During an authored exit animation, up to 512 KiB of the destination BRX is read
+in 64 KiB steps, then consumed by the normal loader. It is optional under memory
+pressure and released as soon as the prefix has been consumed. No second live
+world is created. Model and prefetch timings are included in runtime stderr.
 
 Graphics > Bottom screen > Display: System monitor shows live FPS, CPU,
 GPU and RAM (HEAP/FCRAM/VRAM) instead of the gameplay HUD.

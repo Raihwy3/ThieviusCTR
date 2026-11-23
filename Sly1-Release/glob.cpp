@@ -10,6 +10,9 @@
 #include "circler.h"
 #include "looker.h"
 #include <unordered_map>
+#if defined(__3DS__)
+#include "../platform/3ds/model_decode_3ds.inc"
+#endif
 
 namespace
 {
@@ -52,6 +55,9 @@ static std::shared_ptr<SAA> CloneInstancedSaa(SAA* saaBase)
 
 void LoadGlobsetFromBrx(GLOBSET* pglobset, ALO* palo, CBinaryInputStream* pbis)
 {
+#if defined(__3DS__)
+    cane_model_decode::LoadScope loadScope;
+#endif
     pglobset->cpsaa = 0;
     pglobset->boneMatrixSSBO = 0;
 
@@ -262,6 +268,9 @@ void LoadGlobsetFromBrx(GLOBSET* pglobset, ALO* palo, CBinaryInputStream* pbis)
                 pglobset->aglob[i].asubglob[a].unSelfIllum = pbis->F32Read();
 
                 SUBGLOB& subglob = pglobset->aglob[i].asubglob[a];
+#if defined(__3DS__)
+                cane_model_decode::vertices(pbis,subglob.vertices,vertexCount);
+#else
                 subglob.vertices.resize(vertexCount);
                 for (VERTICE& vertex : subglob.vertices)
                 {
@@ -276,13 +285,19 @@ void LoadGlobsetFromBrx(GLOBSET* pglobset, ALO* palo, CBinaryInputStream* pbis)
                     vertex.boneIndices = glm::uvec4(bone0, bone1, bone2, bone3);
                     vertex.boneWeights = pbis->ReadVector4();
                 }
+#endif
 
                 subglob.indices.resize(triangleCount);
+#if defined(__3DS__)
+                pbis->ReadBytes(subglob.indices.data(),subglob.indices.size()*sizeof(INDICE));
+#endif
                 for (INDICE& triangle : subglob.indices)
                 {
+#if !defined(__3DS__)
                     triangle.v1 = pbis->U16Read();
                     triangle.v2 = pbis->U16Read();
                     triangle.v3 = pbis->U16Read();
+#endif
                     if (triangle.v1 >= vertexCount || triangle.v2 >= vertexCount ||
                         triangle.v3 >= vertexCount)
                         throw std::runtime_error("PCBRX triangle index is out of range");
@@ -292,6 +307,9 @@ void LoadGlobsetFromBrx(GLOBSET* pglobset, ALO* palo, CBinaryInputStream* pbis)
                 {
                     GLOB& glob = pglobset->aglob[i];
                     const size_t deltaCount = static_cast<size_t>(vertexCount) * pglobset->cpose;
+#if defined(__3DS__)
+                    cane_model_decode::poses(pbis,glob.poseDpos,glob.poseDnormal,deltaCount);
+#else
                     glob.poseDpos.reserve(glob.poseDpos.size() + deltaCount);
                     glob.poseDnormal.reserve(glob.poseDnormal.size() + deltaCount);
                     for (size_t delta = 0; delta < deltaCount; ++delta)
@@ -299,6 +317,7 @@ void LoadGlobsetFromBrx(GLOBSET* pglobset, ALO* palo, CBinaryInputStream* pbis)
                         glob.poseDpos.push_back(pbis->ReadVector4());
                         glob.poseDnormal.push_back(pbis->ReadVector4());
                     }
+#endif
                     glob.poseVertexCount += static_cast<int>(vertexCount);
                 }
 
@@ -346,11 +365,15 @@ void LoadGlobsetFromBrx(GLOBSET* pglobset, ALO* palo, CBinaryInputStream* pbis)
                 }
 
                 // 2) Allocate final CPU arrays once (no insert() / no reallocation)
+                // Citro3D consumes SUBGLOB arrays directly. The compatibility
+                // GL adapter records sizes but never consumes these uploads.
+#if !defined(__3DS__)
                 std::vector <VERTICE>  packedVerts(totalVerts);
                 std::vector <uint16_t> packedIdx(totalIndices);
 
                 VERTICE*  vptr = packedVerts.data();
                 uint16_t* iptr = packedIdx.data();
+#endif
 
                 uint32_t vOffset = 0;
                 uint32_t iOffset = 0;
@@ -362,12 +385,12 @@ void LoadGlobsetFromBrx(GLOBSET* pglobset, ALO* palo, CBinaryInputStream* pbis)
                     s.firstIndex = (uint32_t)iOffset;
                     s.indexCount = (uint32_t)(s.indices.size() * 3);
 
-                    // Copy vertices
+#if !defined(__3DS__)
+                    // Copy vertices for desktop upload only.
                     if (!s.vertices.empty())
                     {
                         memcpy(vptr, s.vertices.data(), s.vertices.size() * sizeof(VERTICE));
                         vptr += s.vertices.size();
-                        vOffset += (uint32_t)s.vertices.size();
                     }
 
                     for (auto& tri : s.indices)
@@ -377,6 +400,8 @@ void LoadGlobsetFromBrx(GLOBSET* pglobset, ALO* palo, CBinaryInputStream* pbis)
                         iptr[2] = tri.v3;
                         iptr += 3;
                     }
+#endif
+                    vOffset += (uint32_t)s.vertices.size();
 
                     iOffset += (uint32_t)(s.indices.size() * 3);
                 }
@@ -387,11 +412,19 @@ void LoadGlobsetFromBrx(GLOBSET* pglobset, ALO* palo, CBinaryInputStream* pbis)
 
                 glGenBuffers(1, &glob.VBO);
                 glBindBuffer(GL_ARRAY_BUFFER, glob.VBO);
+#if defined(__3DS__)
+                glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(totalVerts*sizeof(VERTICE)), nullptr, GL_STATIC_DRAW);
+#else
                 glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(packedVerts.size() * sizeof(VERTICE)), packedVerts.data(), GL_STATIC_DRAW);
+#endif
 
                 glGenBuffers(1, &glob.EBO);
                 glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, glob.EBO);
+#if defined(__3DS__)
+                glBufferData(GL_ELEMENT_ARRAY_BUFFER, (GLsizeiptr)(totalIndices*sizeof(uint16_t)), nullptr, GL_STATIC_DRAW);
+#else
                 glBufferData(GL_ELEMENT_ARRAY_BUFFER, (GLsizeiptr)(packedIdx.size() * sizeof(uint16_t)), packedIdx.data(), GL_STATIC_DRAW);
+#endif
 
                 // 5) Vertex attributes ONCE (your exact layout)
                 glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(VERTICE), (void*)offsetof(VERTICE, pos));
@@ -441,11 +474,12 @@ void LoadGlobsetFromBrx(GLOBSET* pglobset, ALO* palo, CBinaryInputStream* pbis)
 
                     WRBGLOB_GL& w = *glob.pwarpGlob;
 
-                    w.vertexCount = (int)packedVerts.size();
+                    w.vertexCount = (int)totalVerts;
                     w.basePos.resize((size_t)w.vertexCount);
 
-                    for (int v = 0; v < w.vertexCount; ++v)
-                        w.basePos[v] = glm::vec4(packedVerts[v].pos, 1.0f);
+                    size_t v=0;
+                    for(const auto& sub:glob.asubglob)for(const auto& vertex:sub.vertices)
+                        w.basePos[v++]=glm::vec4(vertex.pos,1.0f);
 
                     // don't allocate state yet here (because WR->cmat isn’t known until ApplyWrGlob)
                     // but you CAN create the SSBO name now:
@@ -477,8 +511,15 @@ void LoadGlobsetFromBrx(GLOBSET* pglobset, ALO* palo, CBinaryInputStream* pbis)
             for (int k = 0; k < pglobset->aglob[i].csubcel; k++)
             {
                 const uint32_t edgeCount = pbis->U32Read();
+#if defined(__3DS__)
+                if(edgeCount>pbis->Remaining()/(4*sizeof(cane_model_decode::WireCel)))
+                    throw std::runtime_error("Truncated PCBRX cel edge block");
+#endif
                 const size_t pointCount = static_cast<size_t>(edgeCount) * 4;
                 glob.edgeCount += static_cast<GLsizei>(edgeCount);
+#if defined(__3DS__)
+                cane_model_decode::edges(pbis,mergedEdgePoints,pointCount);
+#else
                 mergedEdgePoints.reserve(mergedEdgePoints.size() + pointCount);
                 mergedEdgePoseDpos.reserve(mergedEdgePoseDpos.size() + pointCount * pglobset->cpose);
 
@@ -494,11 +535,19 @@ void LoadGlobsetFromBrx(GLOBSET* pglobset, ALO* palo, CBinaryInputStream* pbis)
                     point.boneWeights = pbis->ReadVector4();
                     mergedEdgePoints.push_back(point);
                 }
+#endif
 
                 const size_t poseDeltaCount = pointCount * pglobset->cpose;
 
+#if defined(__3DS__)
+                if(poseDeltaCount>pbis->Remaining()/sizeof(glm::vec4))throw std::runtime_error("Truncated PCBRX edge poses");
+                const auto poseStart=mergedEdgePoseDpos.size();
+                mergedEdgePoseDpos.resize(poseStart+poseDeltaCount);
+                if(poseDeltaCount)pbis->ReadBytes(mergedEdgePoseDpos.data()+poseStart,poseDeltaCount*sizeof(glm::vec4));
+#else
                 for (size_t delta = 0; delta < poseDeltaCount; ++delta)
                     mergedEdgePoseDpos.push_back(pbis->ReadVector4());
+#endif
             }
 
             if (glob.edgeCount > 0)
@@ -509,18 +558,18 @@ void LoadGlobsetFromBrx(GLOBSET* pglobset, ALO* palo, CBinaryInputStream* pbis)
                 assert(mergedEdgePoints.size() == expectedEdgePointCount);
                 assert(mergedEdgePoseDpos.size() == expectedEdgePoseCount);
 
-				glob.edgePoints = mergedEdgePoints;
-				glob.edgePoseDpos = mergedEdgePoseDpos;
+				glob.edgePoints = std::move(mergedEdgePoints);
+				glob.edgePoseDpos = std::move(mergedEdgePoseDpos);
 
                 glGenBuffers(1, &glob.edgeSSBO);
                 glBindBuffer(GL_SHADER_STORAGE_BUFFER, glob.edgeSSBO);
-                glBufferData(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(mergedEdgePoints.size() * sizeof(CELPOINT)), mergedEdgePoints.data(), GL_STATIC_DRAW);
+                glBufferData(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(glob.edgePoints.size() * sizeof(CELPOINT)), glob.edgePoints.data(), GL_STATIC_DRAW);
 
-                if (!mergedEdgePoseDpos.empty())
+                if (!glob.edgePoseDpos.empty())
                 {
                     glGenBuffers(1, &glob.edgePoseDposSSBO);
                     glBindBuffer(GL_SHADER_STORAGE_BUFFER, glob.edgePoseDposSSBO);
-                    glBufferData(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(mergedEdgePoseDpos.size() * sizeof(glm::vec4)), mergedEdgePoseDpos.data(), GL_STATIC_DRAW);
+                    glBufferData(GL_SHADER_STORAGE_BUFFER, static_cast<GLsizeiptr>(glob.edgePoseDpos.size() * sizeof(glm::vec4)), glob.edgePoseDpos.data(), GL_STATIC_DRAW);
                 }
 
                 glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);

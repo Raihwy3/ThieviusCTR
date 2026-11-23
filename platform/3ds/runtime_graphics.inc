@@ -12,6 +12,7 @@ extern "C" {
 #include <set>
 #include <cstring>
 #include <malloc.h>
+#include <dirent.h>
 extern "C" {extern const unsigned char cane_shader[],cane_shader_end[];}
 extern "C" {extern const unsigned char cane_movie_shader[],cane_movie_shader_end[];}
 #include "font.h"
@@ -234,6 +235,10 @@ class CaneRuntimeGraphics {
     struct TexSlot {C3D_Tex tex{};bool loaded=false;bool inVram=false;};
     std::vector<TexSlot> textures;
     std::vector<cane_texture_etc::PreparedImage> preparedImages;
+    struct SharedAtlas {uint64_t key;std::vector<uint8_t> pixels;};
+    std::vector<SharedAtlas> sharedAtlases;
+    size_t sharedAtlasBytes=0;
+    static constexpr size_t kSharedAtlasBudget=640*1024;
     std::unordered_map<GLuint,int> glTexToImage;
     std::unordered_map<GlobKey,GlobCache,GlobKeyHash> globCaches;
     std::unordered_map<const SUBGLOB*,IndexBuf> indexBuffers;
@@ -384,6 +389,17 @@ class CaneRuntimeGraphics {
             }
         }
         if(size_t(image)<preparedImages.size())preparedImages[image]={};
+        // Fonts/button sheets recur across worlds. Retain their converted,
+        // swizzled bytes with a fixed cap, independent of world object pointers.
+        uint64_t atlasKey=0;
+        const std::vector<uint8_t>* sharedPixels=nullptr;
+        const bool sharedEligible=(controllerAtlas || textAtlas) && bytes<=kSharedAtlasBudget;
+        if(sharedEligible) {
+            const uint64_t meta[]={uint64_t(source.bmpWidth),uint64_t(source.bmpHeight),uint64_t(source.textureFormat),uint64_t(width),uint64_t(height),uint64_t(fmt),uint64_t(textAtlas),1};
+            atlasKey=cane_texture_etc::hashBytes(reinterpret_cast<const uint8_t*>(meta),sizeof meta);
+            atlasKey=cane_texture_etc::hashBytes(source.diffuseTexture.data(),source.diffuseTexture.size(),atlasKey);
+            for(const auto& entry:sharedAtlases)if(entry.key==atlasKey && entry.pixels.size()==bytes) {sharedPixels=&entry.pixels;break;}
+        }
         C3D_Tex tex{};
         bool inVram=false;
         if(!atlas && vramTextureBytes+bytes<=(displayMode==6?1024*1024:kVramTextureBudget) && vramSpaceFree()>=bytes+1024*1024) {
@@ -408,12 +424,16 @@ class CaneRuntimeGraphics {
         // Extend ink colour through transparent padding so linear sampling
         // does not multiply edge coverage by a second dark colour fringe.
         unsigned glyphInk=255;
-        if(textAtlas && source.textureFormat==0) {
+        if(!sharedPixels && textAtlas && source.textureFormat==0) {
             glyphInk=0;
             for(size_t i=0;i<source.diffuseTexture.size();i+=4)glyphInk=std::max(glyphInk,unsigned(source.diffuseTexture[i]));
         }
 
-        if(!compressed.empty())std::memcpy(out,compressed.data(),compressed.size());
+        if(sharedPixels) {
+            std::memcpy(out,sharedPixels->data(),bytes);
+            std::fprintf(stderr,"Shared atlas cache hit: %ux%u (%lu KiB retained)\n",width,height,(unsigned long)(sharedAtlasBytes/1024));
+        }
+        else if(!compressed.empty())std::memcpy(out,compressed.data(),compressed.size());
         else for(unsigned y=0;y<height;++y)for(unsigned x=0;x<width;++x) {
             unsigned sx=x*source.bmpWidth/width,sy=y*source.bmpHeight/height;
             auto p=pixel(source,sx,sy);
@@ -433,6 +453,17 @@ class CaneRuntimeGraphics {
             }
             out[index]=textAtlas?uint16_t(((p[3]?unsigned(p[0]):glyphInk)<<8)|textCoverage):smoothAlpha?uint16_t((p[0]>>4)<<12|(p[1]>>4)<<8|(p[2]>>4)<<4|(p[3]>>4)):
                 uint16_t((p[0]>>3)<<11|(p[1]>>3)<<6|(p[2]>>3)<<1|(p[3]>=64));
+        }
+        if(sharedEligible && !sharedPixels) {
+            // Optional reuse must never prevent a level from loading.
+            try {
+                while(sharedAtlasBytes+bytes>kSharedAtlasBudget && !sharedAtlases.empty()) {
+                    sharedAtlasBytes-=sharedAtlases.front().pixels.size();sharedAtlases.erase(sharedAtlases.begin());
+                }
+                const auto* begin=reinterpret_cast<const uint8_t*>(out);
+                SharedAtlas entry{atlasKey,std::vector<uint8_t>(begin,begin+bytes)};
+                sharedAtlases.push_back(std::move(entry));sharedAtlasBytes+=bytes;
+            }catch(const std::bad_alloc&) {}
         }
         if(textAtlas)std::fprintf(stderr,"Native text atlas: %ux%u LA8, full 8-bit glyph coverage\n",width,height);
         if(textAtlas)std::fprintf(stderr,"Native text readability: inset coverage, preserved counters and alpha\n");
@@ -1043,15 +1074,59 @@ public:
         caneBottomActive=caneBottomAvailable && !CaneBottomMonitor3ds();
         std::fprintf(stderr,"Bottom HUD target: %s\n",caneBottomAvailable?"ready":"unavailable; using monitor");
     }
-    template<class Progress> bool prepareTextureCache(Progress progress) {
+    template<class Progress> bool prepareTextureCache(const std::string& worldPath,Progress progress) {
         const u64 start=osGetTime();
         std::fprintf(stderr,"Preparing texture cache: %lu images\n",(unsigned long)g_abmp.size());
-        uint64_t fingerprint=14695981039346656037ull;
+        // ISO-only installs have no generated bundle. Do not hash every pixel
+        // merely to construct the name of a file that cannot exist.
+        bool hasBundles=false;
+        if(DIR* directory=opendir("sdmc:/3ds/ThieviusCTR/Cache/Textures")) {
+            while(auto* entry=readdir(directory))if(std::strncmp(entry->d_name,"world-v1-",9)==0) {hasBundles=true;break;}
+            closedir(directory);
+        }
+        preparedImages.clear();
+        if(!hasBundles) {
+            progress(unsigned(g_abmp.size()),unsigned(g_abmp.size()));
+            std::fprintf(stderr,"Texture cache: no bundles; skipped pixel hashing (%llu ms)\n",(unsigned long long)(osGetTime()-start));
+            return true;
+        }
+        // Remember the content fingerprint against the source file's identity.
+        // A changed BRX or changed texture descriptors invalidates this index.
+        struct stat sourceStat{};
+        const bool canIndex=stat(worldPath.c_str(),&sourceStat)==0;
+        uint64_t identity=cane_texture_etc::hashBytes(reinterpret_cast<const uint8_t*>(worldPath.data()),worldPath.size());
+        const uint64_t sourceMeta[]={uint64_t(sourceStat.st_size),uint64_t(sourceStat.st_mtime),uint64_t(sourceStat.st_ctime),uint64_t(g_abmp.size())};
+        identity=cane_texture_etc::hashBytes(reinterpret_cast<const uint8_t*>(sourceMeta),sizeof sourceMeta,identity);
         for(const auto& source:g_abmp) {
+            const uint64_t meta[]={uint64_t(source.bmpWidth),uint64_t(source.bmpHeight),uint64_t(source.textureFormat),uint64_t(source.diffuseTexture.size())};
+            identity=cane_texture_etc::hashBytes(reinterpret_cast<const uint8_t*>(meta),sizeof meta,identity);
+        }
+        char indexPath[160];std::snprintf(indexPath,sizeof indexPath,"sdmc:/3ds/ThieviusCTR/Cache/Textures/lookup-v1-%016llx.bin",(unsigned long long)identity);
+        uint64_t fingerprint=14695981039346656037ull,record[4]{};
+        bool indexed=false;
+        if(canIndex)if(FILE* input=std::fopen(indexPath,"rb")) {
+            indexed=std::fread(record,1,sizeof record,input)==sizeof record && std::fgetc(input)==EOF &&
+                record[0]==0x3158444943545255ull && record[1]==identity &&
+                record[3]==cane_texture_etc::hashBytes(reinterpret_cast<const uint8_t*>(record),3*sizeof(uint64_t));
+            std::fclose(input);
+            if(indexed)fingerprint=record[2];
+        }
+        if(!indexed)for(const auto& source:g_abmp) {
             const uint64_t meta[]={uint64_t(source.bmpWidth),uint64_t(source.bmpHeight),uint64_t(source.textureFormat),uint64_t(source.diffuseTexture.size())};
             fingerprint=cane_texture_etc::hashBytes(reinterpret_cast<const uint8_t*>(meta),sizeof meta,fingerprint);
             fingerprint=cane_texture_etc::hashBytes(source.diffuseTexture.data(),source.diffuseTexture.size(),fingerprint);
         }
+        if(canIndex && !indexed) {
+            record[0]=0x3158444943545255ull;record[1]=identity;record[2]=fingerprint;
+            record[3]=cane_texture_etc::hashBytes(reinterpret_cast<const uint8_t*>(record),3*sizeof(uint64_t));
+            char temp[176];std::snprintf(temp,sizeof temp,"%s.tmp",indexPath);
+            if(FILE* output=std::fopen(temp,"wb")) {
+                bool ok=std::fwrite(record,1,sizeof record,output)==sizeof record;
+                ok=std::fclose(output)==0 && ok;
+                if(!ok || std::rename(temp,indexPath)!=0)std::remove(temp);
+            }
+        }
+        std::fprintf(stderr,"Texture cache lookup: %s (%llu ms)\n",indexed?"index hit":"pixel fingerprint",(unsigned long long)(osGetTime()-start));
         char bundle[160];std::snprintf(bundle,sizeof bundle,"sdmc:/3ds/ThieviusCTR/Cache/Textures/world-v1-%016llx.bin",(unsigned long long)fingerprint);
         preparedImages.clear();preparedImages.resize(g_abmp.size());
         if(cane_texture_etc::loadBundle(bundle,fingerprint,preparedImages)) {
@@ -1451,14 +1526,19 @@ public:
                 blot->pvtblot->pfnDrawBlot(blot);
             const bool persistent=caneBottomActive && !caneLoading &&
                 ((kind==BLOTK_Coin && CaneBottomCoins3ds()) ||
-                 (kind==BLOTK_Lives && CaneBottomHealth3ds())) &&
+                 (kind==(CaneBottomBottles3ds()?BLOTK_Clue:BLOTK_Lives) && CaneBottomHealth3ds())) &&
                 (g_ui.uisPlaying!=UIS_Attract && g_ui.uis!=UIS_Splash);
             if(persistent && blot && blot->pfont && blot->pvtblot && blot->pvtblot->pfnDrawBlot) {
                 const float savedX=blot->x,savedY=blot->y,savedOn=blot->uOn;
                 const BLOTS savedState=blot->blots;
                 caneHudLayer=kind==BLOTK_Coin?CaneHudLayer::Coins:CaneHudLayer::Health;
                 blot->x=blot->xOn;blot->y=blot->yOn;blot->uOn=1;blot->blots=BLOTS_Visible;
-                blot->pvtblot->pfnDrawBlot(blot);
+                if(kind==BLOTK_Clue && g_psw->cclueAll==0) {
+                    // The retail pop-up is empty in bottle-free levels, but
+                    // the explicitly enabled persistent counter stays visible.
+                    CTextBox box;box.SetPos(0,0);box.SetSize(512,64);box.SetTextColor(&blot->rgba);
+                    blot->pfont->PushScaling(1,1);blot->pfont->DrawPchz("0/0?",&box);blot->pfont->PopScaling();
+                } else blot->pvtblot->pfnDrawBlot(blot);
                 blot->x=savedX;blot->y=savedY;blot->uOn=savedOn;blot->blots=savedState;
             }
             caneHudLayer=CaneHudLayer::Top;canePortraitContext=nullptr;

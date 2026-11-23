@@ -62,7 +62,7 @@ initial_inverts=(
 )
 if args.features:
     if not (args.runtime and args.menu and args.buttons):parser.error('--features needs --runtime --menu --buttons')
-    keys={'display_mode':'0','stereo_strength':'100','gyro_enabled':'0','gyro_sensitivity':'100','low_shadow_detail':'0','bottom_coins':'1','bottom_health':'1','bottom_monitor':'0'}
+    keys={'display_mode':'0','stereo_strength':'100','gyro_enabled':'0','gyro_sensitivity':'100','low_shadow_detail':'0','bottom_coins':'1','bottom_health':'1','bottom_bottles':'0','bottom_monitor':'0'}
     lines=[line for line in cfg_lines if line.split(' ',1)[0] not in keys]
     icon_cfg.write_text('\n'.join(lines+[f'{key} {value}' for key,value in keys.items()])+'\n')
     qt=out/'config/azaharplus-emu/qt-config.ini'
@@ -141,16 +141,17 @@ with (out/'xvfb.log').open('w') as xlog,(out/'azahar.log').open('w') as log:
                         subprocess.run(['import','-window','root',str(out/'display-800.png')],env=env,check=True)
                         tap('h');saved('display_mode 2');time.sleep(2)
                         subprocess.run(['import','-window','root',str(out/'display-stereo.png')],env=env,check=True)
-                        for mode,name in ((3,'ssaa'),(4,'picasr-aa'),(5,'picasr-sharpen'),(6,'stereo-480'),(0,'native')):
+                        for mode,name in ((3,'ssaa'),(6,'stereo-480'),(0,'native')):
                             tap('h');saved('display_mode '+str(mode));time.sleep(2)
                             subprocess.run(['import','-window','root',str(out/('display-'+name+'.png'))],env=env,check=True)
+                        tap('f');saved('display_mode 6');tap('h');saved('display_mode 0')
                         # Compare the fixed title/first menu row against the
                         # known upright SSAA path, not just display-mode logs.
                         from PIL import Image,ImageChops,ImageStat
                         def top_image(path):return Image.open(path).convert('L').crop((300,225,700,465))
                         reference=top_image(out/'display-ssaa.png').crop((110,52,290,89)).point(lambda x:255 if x>135 else 0)
                         transforms=(None,Image.Transpose.ROTATE_180,Image.Transpose.FLIP_TOP_BOTTOM,Image.Transpose.FLIP_LEFT_RIGHT)
-                        for name in ('picasr-aa','picasr-sharpen','native','stereo','stereo-480'):
+                        for name in ('native','stereo','stereo-480'):
                             candidate=top_image(out/('display-'+name+'.png'))
                             scores=[]
                             for transform in transforms:
@@ -158,7 +159,7 @@ with (out/'xvfb.log').open('w') as xlog,(out/'azahar.log').open('w') as log:
                                 sample=aligned.crop((110,52,290,89)).point(lambda x:255 if x>135 else 0)
                                 scores.append(ImageStat.Stat(ImageChops.difference(reference,sample)).mean[0])
                             if scores.index(min(scores))!=0:raise RuntimeError('Image orientation mismatch: '+name+' '+str(scores))
-                        print('PASS captured PICA-SR/native/stereo image orientation against upright SSAA',flush=True)
+                        print('PASS captured native/stereo image orientation against upright SSAA',flush=True)
                         tap('z');tap('g');tap('g');tap(confirm_key());time.sleep(1)
                         subprocess.run(['import','-window','root',str(out/'stereo-settings.png')],env=env,check=True)
                         tap('g');tap('h');saved('stereo_strength 125');tap('f');saved('stereo_strength 100')
@@ -167,7 +168,10 @@ with (out/'xvfb.log').open('w') as xlog,(out/'azahar.log').open('w') as log:
                         tap('g');tap(confirm_key());time.sleep(1)
                         subprocess.run(['import','-window','root',str(out/'bottom-options.png')],env=env,check=True)
                         tap('h');saved('bottom_coins 0');tap('f');saved('bottom_coins 1')
-                        tap('g');tap('h');saved('bottom_health 0');tap('f');saved('bottom_health 1')
+                        tap('g');tap('h');saved('bottom_health 1');saved('bottom_bottles 1')
+                        subprocess.run(['import','-window','root',str(out/'bottom-options-bottles.png')],env=env,check=True)
+                        tap('h');saved('bottom_health 0');tap('f');saved('bottom_health 1');saved('bottom_bottles 1')
+                        tap('f');saved('bottom_bottles 0')
                         tap('g');tap('h');saved('bottom_monitor 1');time.sleep(1)
                         subprocess.run(['import','-window','root',str(out/'bottom-monitor.png')],env=env,check=True)
                         tap('f');saved('bottom_monitor 0');tap('z')

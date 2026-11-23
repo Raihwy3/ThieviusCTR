@@ -94,6 +94,8 @@ def compile_one(name):
     source_hash = hashlib.sha256((header_digest + repr(command)).encode() + source.read_bytes())
     if name == 'glshaders':
         source_hash.update((OUT / 'embedded_shaders.h').read_bytes())
+    if name == 'glob':
+        source_hash.update((ROOT/'platform/3ds/model_decode_3ds.inc').read_bytes())
     if name == 'audio_ndsp_3ds':
         source_hash.update(audio_shared.read_bytes())
         source_hash.update(music_shared.read_bytes())

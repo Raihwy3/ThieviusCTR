@@ -89,5 +89,5 @@ result=subprocess.run(command,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,te
 if result.returncode:
  print(result.stdout[-12000:]);raise SystemExit(result.returncode)
 subprocess.run([str(DK/'tools/bin/3dsxtool'),str(OUT/'ThieviusCTR.elf'),str(OUT/'ThieviusCTR.3dsx')],check=True)
-subprocess.run([str(DK/'tools/bin/smdhtool'),'--create','ThieviusCTR','Sly Cooper 3DS launcher & port','Raihwy3 / ProjectCane',str(DK/'libctru/default_icon.png'),str(OUT/'ThieviusCTR.smdh')],check=True)
+subprocess.run([str(DK/'tools/bin/smdhtool'),'--create','ThieviusCTR','Sly Cooper 3DS launcher & port','Raihwy3 / ProjectCane',str(ROOT/'platform/3ds/icon.png'),str(OUT/'ThieviusCTR.smdh')],check=True)
 print('Built native runtime & launcher:',OUT/'ThieviusCTR.3dsx')

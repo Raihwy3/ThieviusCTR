@@ -55,6 +55,8 @@ extern void CaneCalibrateGyro3ds();
 extern bool CaneGyroCalibrating3ds();
 extern bool CaneBottomCoins3ds();
 extern bool CaneBottomHealth3ds();
+extern bool CaneBottomBottles3ds();
+extern void CaneCycleBottomRight3ds(int);
 extern bool CaneBottomMonitor3ds();
 extern void CaneToggleBottomOption3ds(int);
 extern bool CaneSkipIntro3ds();
@@ -1457,7 +1459,7 @@ void ExecutePrompt(PROMPT* pprompt, int direction)
         if(response==RESPK_Back)SetPrompt(pprompt,PRP_Basic,PRK_VideoMenu);
         else {
             if(response==RESPK_TextureFiltering)CaneToggleBottomOption3ds(0);
-            else if(response==RESPK_AnisotropicFiltering)CaneToggleBottomOption3ds(1);
+            else if(response==RESPK_AnisotropicFiltering)CaneCycleBottomRight3ds(direction);
             else if(response==RESPK_Monitor)CaneToggleBottomOption3ds(2);
             rebuildPromptKeepingSelection();
         }
@@ -2247,10 +2249,10 @@ const char* AchzFromRespk(RESPK respk)
     if(respk==RESPK_KeyboardMapping)return "Gyro aiming...";
     if(respk==RESPK_Msaa)return "Bottom screen...";
     if(respk==RESPK_TextureFiltering)return CaneBottomCoins3ds()?"Coins: On":"Coins: Off";
-    if(respk==RESPK_AnisotropicFiltering)return CaneBottomHealth3ds()?"Health / lives: On":"Health / lives: Off";
+    if(respk==RESPK_AnisotropicFiltering)return !CaneBottomHealth3ds()?"Right counter: Off":CaneBottomBottles3ds()?"Right counter: Bottles":"Right counter: Lives";
     if(respk==RESPK_Monitor)return CaneBottomMonitor3ds()?"Display: System monitor":"Display: Game HUD";
     if(respk==RESPK_NativeDisplay) {
-        static char label[64];const char* names[]={"Native (400x240)","Wide (800x240)","3D (400x240/eye)","Supersampling","PICA-SR AA","PICA-SR sharpen","3D (400x480/eye)"};
+        static char label[64];const char* names[]={"Native (400x240)","Wide (800x240)","3D (400x240/eye)","Supersampling","Custom","Custom","3D (400x480/eye)"};
         std::snprintf(label,sizeof label,"Display: %s",names[CaneDisplayMode3ds()]);return label;
     }
     if(respk==RESPK_NativeRenderCap) {static char label[40];std::snprintf(label,sizeof label,"Render cap: %d FPS",CaneRenderCap3ds());return label;}

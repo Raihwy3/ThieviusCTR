@@ -147,7 +147,9 @@ int main() {
         bool skippingTitle=false;float titleMasterVolume=1;
         monitorActive=true;
         std::string file="sdmc:/3ds/ThieviusCTR/Worlds/Splash/Splash.brx";
+        extern void CanePrefetchLevel3ds(LEVELINFO*,const std::string&);
         LEVELINFO* level=nullptr;
+        bool firstLevelFrame=false;
         u64 last=osGetTime(),report=last;u64 updateTicks=0,simTicks=0;unsigned frames=0;bool missionComplete=false;bool announcedAttract=false;u32 previousHeld=0;int lastState=-1;
         auto playPendingMovies=[&]() {
             bool played=false;
@@ -208,7 +210,11 @@ int main() {
                     }
                     perfMonitor.setStatus(pending->levelName.c_str());
                     graphics.showLoading();
-                    KillSoundSystem();graphics.resetWorld();g_transition.Execute(file);
+                    const u64 loadStart=osGetTime();
+                    KillSoundSystem();graphics.resetWorld();
+                    const u64 loadReset=osGetTime();
+                    g_transition.Execute(file);
+                    const u64 loadWorld=osGetTime();
                     if(!g_psw)throw std::runtime_error("Transition did not create a world");
                     if(g_transition.m_plevelCurrent!=pending) {
                         missionComplete=true;
@@ -219,10 +225,14 @@ int main() {
                         perfMonitor.resetWindow();
                         continue;
                     }
-                    if(!graphics.prepareTextureCache([&](unsigned done,unsigned total) {
+                    if(!graphics.prepareTextureCache(file,[&](unsigned done,unsigned total) {
                         char msg[64];snprintf(msg,sizeof msg,"Preparing textures %u/%u",done,total);perfMonitor.setStatus(msg);
                     }))break;
+                    std::fprintf(stderr,"Level load ms: reset=%llu world=%llu cache=%llu total=%llu level=0x%03X\n",
+                        (unsigned long long)(loadReset-loadStart),(unsigned long long)(loadWorld-loadReset),
+                        (unsigned long long)(osGetTime()-loadWorld),(unsigned long long)(osGetTime()-loadStart),unsigned(pending->levelID));
                     level=pending;g_psw->ambOwners.reserve(128);lastState=g_pjt?int(g_pjt->jts):-1;
+                    firstLevelFrame=true;
                     ResyncClockTick(&g_clock);last=osGetTime();
                     perfMonitor.resetWindow();simTicks=0;updateTicks=0;
                     perfMonitor.updateIfDue(
@@ -321,10 +331,18 @@ int main() {
             }
             if(fQuitGame)break;
             if(fastTitle && !startupTitleReached)continue;
+            if(!fastTitle && g_wipe.wipes==WIPES_WipingOut && g_wipe.trans.fSet)
+                CanePrefetchLevel3ds(g_wipe.trans.plevel,file);
             graphics.updateMs=float(double(updateTicks)/268111.856);
             updateTicks=0;
             if(!missionComplete && g_psw && g_pcm) {
+                const u64 firstDrawStart=firstLevelFrame?osGetTime():0;
                 graphics.draw();
+                if(firstLevelFrame) {
+                    std::fprintf(stderr,"Level first draw ms: %llu level=0x%03X (includes visible texture/mesh preparation)\n",
+                        (unsigned long long)(osGetTime()-firstDrawStart),level?unsigned(level->levelID):0u);
+                    firstLevelFrame=false;
+                }
                 perfMonitor.setTargetFps(CaneRenderCap3ds());
                 // Citro3D's frame counter counts submitted/completed frames,
                 // not VBlanks. Waiting for it here prevents the next frame

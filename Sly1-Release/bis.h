@@ -11,6 +11,10 @@
 #include <glm/glm.hpp>
 
 using byte = std::uint8_t;
+#if defined(__3DS__)
+// Optional, bounded prefix read during the authored exit animation.
+void CanePrefetchWorld3ds(const std::string& path);
+#endif
 
 enum BISK
 {
@@ -67,6 +71,11 @@ public:
 
     ~CBinaryInputStream();
 
+    // Declared before file so the filebuf is destroyed before its storage.
+#if defined(__3DS__)
+    std::unique_ptr<char[]> m_fileBuffer;
+    std::size_t m_fileSize = 0;
+#endif
     std::ifstream file;
 
     BISK m_bisk = BISK_Nil;
