@@ -2560,8 +2560,8 @@ void DrawBinoc(BINOC* pbinoc)
             pauseYVirtual = offsetY + 472.80002f;
         }
 
-        const float pauseX = bottomDialogue?294.0f:UiX(pauseXVirtual);
-        const float pauseY = bottomDialogue?126.0f:UiY(pauseYVirtual);
+        float pauseX = bottomDialogue?294.0f:UiX(pauseXVirtual);
+        float pauseY = bottomDialogue?126.0f:UiY(pauseYVirtual);
 
         char achzPause[2] = { pbinoc->chPause, '\0' };
         CFontBrx* pfontJoy = PfontFromFont(1);
@@ -2569,6 +2569,20 @@ void DrawBinoc(BINOC* pbinoc)
         if (pfontJoy != nullptr)
         {
             pfontJoy->PushScaling(pauseScale, pauseScale);
+#ifdef __3DS__
+            // Clamp the actual pulsing glyph, not just its anchor. The retail
+            // baseline can put its lower half beyond a 240-line framebuffer.
+            if(const GLYFF* glyph=pfontJoy->PglyffFromCh(pbinoc->chPause)) {
+                const float width=float(glyph->dx)*pfontJoy->m_rxScale;
+                const float height=float(pfontJoy->m_dyUnscaled)*pfontJoy->m_ryScale;
+                const float left=bottomDialogue?8.f:4.f;
+                const float top=bottomDialogue?52.f:4.f;
+                const float right=bottomDialogue?312.f:float(g_gl.width)-4.f;
+                const float bottom=bottomDialogue?140.f:float(g_gl.height)-4.f;
+                pauseX=std::clamp(pauseX,left,std::max(left,right-width));
+                pauseY=std::clamp(pauseY,top,std::max(top,bottom-height));
+            }
+#endif
 
             CTextBox tbxPause;
             tbxPause.SetPos(pauseX, pauseY);

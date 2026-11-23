@@ -5,6 +5,8 @@
 #include "binoc.h"
 #include "ui.h"
 #include "prompt.h"
+#include "po.h"
+#include "safe_touch.h"
 
 extern bool CaneDialogueOnBottom3ds();
 extern bool CaneSwapBA3ds();
@@ -127,12 +129,26 @@ void CanePollJoy3ds(JOY* joy)
     // A floating touch stick preserves camera motion while the finger is held.
     static bool touching=false;
     static int originX=0,originY=0;
+    static CaneSafeTouch safeTouch;
     const bool contact=(held&KEY_TOUCH)!=0;
+    const PO* controlled=PpoCur();
+    const bool safeActive=controlled && controlled->pvtlo && controlled->pvtlo->cid==CID_VAULT &&
+        g_prompt.blots==BLOTS_Hidden &&
+        (g_ui.uis==UIS_Playing || g_ui.uis==UIS_Hub);
+    touchPosition point{};
+    if(contact)hidTouchRead(&point);
+    int safeX=0,safeY=0;
+    safeTouch.Update(safeActive,contact,point.px,point.py,safeX,safeY);
     if(contact) {
-        touchPosition point{};hidTouchRead(&point);
         if(!touching) {originX=point.px;originY=point.py;}
         if(g_prompt.blots!=BLOTS_Hidden) {
             // Menus remain on the top screen and use physical controls.
+        } else if(safeActive) {
+            // Vault instructions can keep the dialogue HUD visible. Route
+            // touch to the combination before the generic dialogue tap.
+            if(safeX || safeY) {
+                joy->x=float(safeX);joy->y=float(safeY);joy->uDeflect=1.f;
+            }
         } else if(CaneDialogueOnBottom3ds()) {
             if(!touching)joy->current[BTN_CROSS]=true;
         } else if(g_ui.uis==UIS_Attract) {

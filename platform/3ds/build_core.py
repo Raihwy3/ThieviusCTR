@@ -98,6 +98,8 @@ def compile_one(name):
         source_hash.update((ROOT/'platform/3ds/model_decode_3ds.inc').read_bytes())
     if name == 'save':
         source_hash.update((ROOT/'platform/3ds/save_storage.inc').read_bytes())
+    if name == 'input_3ds':
+        source_hash.update((ROOT/'platform/3ds/safe_touch.h').read_bytes())
     if name == 'audio_ndsp_3ds':
         source_hash.update(audio_shared.read_bytes())
         source_hash.update(music_shared.read_bytes())

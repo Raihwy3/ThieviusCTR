@@ -48,9 +48,16 @@ Graphics > Bottom screen has a Coins switch and Right counter: Off/Lives/Bottles
 These keep counters visible at the upper corners of the bottom screen.
 Bottles shows the original bottle count/icon; bottle-free levels show 0/0.
 The game's original animated top-screen counter pop-ups still work.
+Compatible animated model pieces share GPU draws where their transform, tint
+and textures match. Distant outlines use projected size: tiny objects skip
+outline processing and small objects omit subpixel line segments. Sly keeps
+full outline detail. These changes need real-console performance testing.
 Portrait conversations and gameplay instructions use the bottom screen,
 with text above the animated character windows and one dialogue frame.
 Drag on the bottom screen to control the camera. Tap dialogue to advance,
+and swipe while entering a safe combination: up/down changes the number,
+left/right switches slots. Keep dragging for more steps; holding still does
+not repeat. Circle Pad and button controls remain available.
 use START to pause and physical controls for menus on the top screen. The title
 screen has touch buttons for Play and Options. Display: System monitor
 restores the performance monitor outside conversations.
