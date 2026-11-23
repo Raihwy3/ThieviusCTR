@@ -17,14 +17,54 @@ Controls (default Swap B/A On, Camera Invert X On, Binoc Invert Y On):
   SELECT: original title options
   SELECT + START: exit this application
 All added settings use the game's own Options menu, grouped into Sound,
-Interface and Controls. Interface > Button icons defaults to New 3DS;
+Graphics and Controls. Graphics > Button icons defaults to New 3DS;
 select PS2 to use the original artwork. Controls contains Dialogue Skip
 Controls, Swap B/A (defaults On; swaps physical B/A with PS Cross/Circle as
 well as displayed B/A or X/O icons), Camera Invert X/Y (X defaults On) and
 Binoc Invert X/Y (Y defaults On). Left/Right or accept changes these
 settings; native-options.cfg saves them between launches.
-During gameplay, the bottom screen shows a live FPS, CPU, GPU, and RAM
-(HEAP/FCRAM/VRAM) system monitor.
+Graphics also offers normal 400x240, 800x240 2D, per-eye stereoscopic 3D,
+800x480 internal supersampling, PICA-SR edge AA, or PICA-SR sharpening, plus
+Original/Low shadow detail and a separate 3D settings page (enable, strength,
+automatic convergence, convergence distance, pop-out limit and HUD depth).
+Automatic convergence follows the camera-to-Sly distance; disabling it uses
+a fixed reference distance. These display/filter modes are
+mutually exclusive. The 3D slider controls depth;
+closing it skips the second eye draw. Unsupported modes fall back to 400x240;
+the emulator also falls back for 800x240 because its wide output is cropped.
+Cutscene playback keeps its existing settings.
+Display also includes 3D (400x480/eye), which renders twice the vertical
+resolution per eye and downsamples to the panel. This uses more GPU time
+and VRAM than normal 3D. Texture storage is relocated when needed to make
+room for both eyes; if those larger targets cannot fit, normal 3D is retained.
+Graphics > Display groups the display mode and frame cap. Graphics also has
+separate 3D settings and Bottom screen submenus.
+Graphics > Bottom screen has separate Coins and Health / lives switches.
+These keep counters visible at the upper corners of the bottom screen.
+The game's original animated top-screen counter pop-ups still work.
+Portrait conversations and gameplay instructions use the bottom screen,
+with text above the animated character windows and one dialogue frame.
+Drag on the bottom screen to control the camera. Tap dialogue to advance,
+use START to pause and physical controls for menus on the top screen. The title
+screen has touch buttons for Play and Options. Display: System monitor
+restores the performance monitor outside conversations.
+The startup intro plays on first use. Reaching the title enables the saved
+Graphics > Skip intro setting, which skips that sequence on later launches.
+Turn it Off to watch the intro again. Mission cutscenes are unaffected.
+Loading... appears in the game's font at the bottom right during level loads.
+Controls > Gyro aiming adds motion to binocular/sniper aiming without replacing
+stick input. It has its own 25-400% sensitivity and calibration (keep still for
+about 1.5 seconds). Gyro is Off by default. These new display/gyro options
+have emulator/host checks; their physical feel still needs console testing.
+Existing ETC1 world-texture caches can be loaded with a 3 MiB VRAM texture budget.
+Transparent textures and fonts/UI retain their existing formats. Prepared
+texture caches live under Cache/Textures/ on your SD card, not in release ZIPs.
+Missing caches use the original textures immediately. Synchronous startup
+encoding is disabled so fresh ISO installations do not stall before movies.
+No texture encoding or cache-file reads run in the draw path.
+
+Graphics > Bottom screen > Display: System monitor shows live FPS, CPU,
+GPU and RAM (HEAP/FCRAM/VRAM) instead of the gameplay HUD.
 The pause menu's Exit to Homebrew Launcher closes the application cleanly.
 Open Options > Sound to choose the audio backend and adjust volumes;
 Left/Right changes a value, accept selects and X goes back.

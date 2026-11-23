@@ -139,6 +139,12 @@ int main() {
         stage("Start native scene / character renderer");
         CaneRuntimeGraphics graphics;graphics.init();
         perfMonitor.init(&bottomConsole, CaneLauncherDetectConsoleModel());
+        graphics.attachBottomConsole(&bottomConsole);
+        perfMonitor.setTargetFps(CaneRenderCap3ds());
+        u64 lastPresentedTick=0;
+        bool startupTitleReached=false;
+        bool skipStartupAnimation=CaneSkipIntro3ds();
+        bool skippingTitle=false;float titleMasterVolume=1;
         monitorActive=true;
         std::string file="sdmc:/3ds/ThieviusCTR/Worlds/Splash/Splash.brx";
         LEVELINFO* level=nullptr;
@@ -148,9 +154,13 @@ int main() {
             if(CaneHasPendingMovie3ds() && g_wipe.wipes!=WIPES_WipingOut) {
                 perfMonitor.setStatus("Playing cutscene...");
             }
+            if(CaneHasPendingMovie3ds() && g_wipe.wipes!=WIPES_WipingOut)graphics.applyGameplayDisplay(0);
             while(CaneHasPendingMovie3ds() && g_wipe.wipes!=WIPES_WipingOut) {
                 int movie=CaneTakeMovie3ds();
                 if(movie<0)break;
+                if(movie==17 && !startupTitleReached && skipStartupAnimation) {
+                    stage("Skipping previously viewed startup video");continue;
+                }
                 if(movie==17)stage("Playing original startup video");
                 else if(movie==0)stage("Playing original opening story");
                 else {
@@ -197,6 +207,7 @@ int main() {
                         stage(msg);
                     }
                     perfMonitor.setStatus(pending->levelName.c_str());
+                    graphics.showLoading();
                     KillSoundSystem();graphics.resetWorld();g_transition.Execute(file);
                     if(!g_psw)throw std::runtime_error("Transition did not create a world");
                     if(g_transition.m_plevelCurrent!=pending) {
@@ -208,6 +219,9 @@ int main() {
                         perfMonitor.resetWindow();
                         continue;
                     }
+                    if(!graphics.prepareTextureCache([&](unsigned done,unsigned total) {
+                        char msg[64];snprintf(msg,sizeof msg,"Preparing textures %u/%u",done,total);perfMonitor.setStatus(msg);
+                    }))break;
                     level=pending;g_psw->ambOwners.reserve(128);lastState=g_pjt?int(g_pjt->jts):-1;
                     ResyncClockTick(&g_clock);last=osGetTime();
                     perfMonitor.resetWindow();simTicks=0;updateTicks=0;
@@ -220,10 +234,18 @@ int main() {
                 }
                 missionComplete=true;stage("No level target specified. Select + START exits.");
             }
-            const u64 now=osGetTime();
-            if(now-last>100)last=now-100;
+            if(!startupTitleReached && level && level->levelID==3 && (pressed&KEY_START))skipStartupAnimation=true;
+            const bool fastTitle=skipStartupAnimation && !startupTitleReached && level && level->levelID==3;
+            if(fastTitle && !skippingTitle) {
+                graphics.showLoading("Preparing title...");
+                titleMasterVolume=GetMasterVolume();SetMasterVolume(0);skippingTitle=true;
+                stage("Advancing startup script without rendering the intro");
+            }
+            const u64 wallNow=osGetTime();
+            const u64 now=fastTitle?last+33*64:wallNow;
+            if(!fastTitle && now-last>100)last=now-100;
             const u64 simT0=svcGetSystemTick();
-            for(unsigned step=0;!missionComplete && g_psw && now-last>=33 && step<3;++step) {
+            for(unsigned step=0;!missionComplete && g_psw && now-last>=33 && step<(fastTitle?64u:3u);++step) {
                 last+=33;
                 g_joy.Update(nullptr);
                 UpdateUi(&g_ui);
@@ -236,11 +258,23 @@ int main() {
                 g_clock.t+=g_clock.dt;g_clock.tReal+=dt;g_clock.tickFrame=TickNow();
                 UpdateCodes();
                 u64 ut0=svcGetSystemTick();
+                // Use the game's authored START-button transition so the title
+                // camera, player placement and script state remain consistent.
+                if(!startupTitleReached && level && level->levelID==3 &&
+                   (skipStartupAnimation || (pressed&KEY_START))) {
+                    skipStartupAnimation=true;
+                    if(g_wipe.wipes==WIPES_Idle && g_wipe.transButton.fSet) {
+                        JOY skipJoy{};skipJoy.current[BTN_START]=true;
+                        if(FCatchWipeButtonTrans(&g_wipe,&skipJoy,WIPES_WipingOut))
+                            stage("Skipped startup animation through original title transition");
+                    }
+                }
                 UpdateSw(g_psw,g_clock.dt);
                 updateTicks+=svcGetSystemTick()-ut0;
                 if(g_ui.uis==UIS_Attract) {
                     if(!announcedAttract) {
                         announcedAttract=true;
+                        if(!startupTitleReached) {startupTitleReached=true;CaneMarkIntroSeen3ds();}
                         stage("Original title menu: START plays; SELECT opens menu");
                         stage("Original gameplay with native graphics / DSP audio");
                         stage(CaneSwapBA3ds()
@@ -262,7 +296,12 @@ int main() {
                     if(!std::isfinite(p.x)||!std::isfinite(p.y)||!std::isfinite(p.z))
                         throw std::runtime_error("Non-finite player position");
                 }
-                if(g_transition.m_fPending || (CaneHasPendingMovie3ds() && g_wipe.wipes!=WIPES_WipingOut))break;
+                if((fastTitle && startupTitleReached) || g_transition.m_fPending || (CaneHasPendingMovie3ds() && g_wipe.wipes!=WIPES_WipingOut))break;
+            }
+            if(fastTitle)last=osGetTime();
+            if(skippingTitle && startupTitleReached) {
+                SetMasterVolume(titleMasterVolume);skippingTitle=false;ResyncClockTick(&g_clock);
+                stage("Startup script ready at original title menu");
             }
             simTicks+=svcGetSystemTick()-simT0;
             if(now-report>=1000) {
@@ -281,10 +320,22 @@ int main() {
                 report=now;
             }
             if(fQuitGame)break;
+            if(fastTitle && !startupTitleReached)continue;
             graphics.updateMs=float(double(updateTicks)/268111.856);
             updateTicks=0;
             if(!missionComplete && g_psw && g_pcm) {
                 graphics.draw();
+                perfMonitor.setTargetFps(CaneRenderCap3ds());
+                // Citro3D's frame counter counts submitted/completed frames,
+                // not VBlanks. Waiting for it here prevents the next frame
+                // from ever being submitted. Pace against the system clock.
+                const u64 interval=268111856ull/u64(CaneRenderCap3ds());
+                const u64 tick=svcGetSystemTick();
+                if(lastPresentedTick && tick-lastPresentedTick<interval) {
+                    const u64 remaining=interval-(tick-lastPresentedTick);
+                    svcSleepThread(s64(remaining*1000000000ull/268111856ull));
+                }
+                lastPresentedTick=svcGetSystemTick();
                 perfMonitor.recordFrame(double(simTicks)/268111.856,graphics.cpuMs,graphics.drawCmdMs,graphics.gpuMs);
                 simTicks=0;
             } else {
@@ -297,6 +348,13 @@ int main() {
                 CaneSwapBA3ds());
         }
         stage("Native runtime probe exited");
+        // Stop DSP and sensor users while the GPU/services are still alive.
+        // graphics is destroyed when this scope ends, after audio has stopped.
+        stage("Shutdown: audio");
+        CaneStopAudio3ds();
+        stage("Shutdown: input");
+        ShutdownControllerInput();
+        stage("Shutdown: graphics");
     } catch(const std::exception& e) {
         perfMonitor.restoreStdout();
         monitorActive=false;consoleClear();
@@ -304,8 +362,15 @@ int main() {
         printf("\nSTART: exit\n");
         while(aptMainLoop()) {hidScanInput();if(hidKeysDown()&KEY_START)break;gfxFlushBuffers();gfxSwapBuffers();gspWaitForVBlank();}
     }
+    // These are idempotent and also cover startup exceptions.
     CaneStopAudio3ds();ShutdownControllerInput();
+    stage("Shutdown: services");
     normalShutdown=true;
     if(logFile) {fclose(logFile);logFile=nullptr;}
-    if(sd)fsExit();gfxExit();return 0;
+    perfMonitor.restoreStdout();
+    if(sd)fsExit();gfxExit();
+    // The desktop engine has global owners whose destructors access its world,
+    // audio and renderer. They must not run after platform services are gone.
+    // newlib _exit still performs the libctru/Homebrew Launcher exit path.
+    __real__exit(0);
 }

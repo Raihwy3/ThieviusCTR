@@ -1278,8 +1278,10 @@ bool CanePlayDecodedFmv3ds(int index, const CaneFmvResolved& src, const CaneFmvD
         C3D_Tex* dstTex = tex[tex[1] ? texIdx : 0];
         if (drawThisFrame) {
             if (!tex[1]) {
+                // Citro3D owns the P3D completion event. FrameSync has already
+                // consumed it; waiting on it again can block forever without
+                // another submitted GPU command (single-texture fallback).
                 C3D_FrameSync();
-                gspWaitForP3D();
             }
             const u64 t0 = svcGetSystemTick();
             y2rRes = convertFrameToTexY2r(st, currentFrame, texW, dstTex, y2rEvent);

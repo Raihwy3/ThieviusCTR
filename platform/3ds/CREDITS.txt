@@ -1,6 +1,13 @@
 ThieviusCTR (Nintendo 3DS port based on ProjectCane)
 https://github.com/Raihwy3/ThieviusCTR
 
+PICA-SR PICA200 post-processing kernels:
+  ponuno / PICASR-FSR-for-3DS — https://github.com/ponuno/PICASR-FSR-for-3DS
+  Source used with permission from its author. The PICA-SR TEV kernels provide
+  the optional native-resolution edge AA and sharpening passes in Graphics.
+  The upstream repository does not include a license file; permission was
+  granted directly by the author for this project.
+
 Original engine reconstruction and PC port:
   theclub654 / ProjectCane and its contributors
   https://github.com/theclub654/ProjectCane
@@ -47,6 +54,18 @@ Launcher, startup updater, and native PICA200 texture-coordinate reference:
   update_http, update_3ds, and host ASan/UBSan test harness), pinned OpenDSP
   vendor copy, PICA200 texture-coordinate conventions, and dual-screen console
   chrome design.
+  Gyro sensor-axis signs and raw-to-degrees-per-second conversion were also
+  referenced from Eyes of Gold. ThieviusCTR integrates the resulting angles
+  directly with its own binocular/sniper camera and retains stick control.
+  Its native_clip/native_world shaders and stereo submission code were also
+  referenced for branch-free stereo, initialized vertex outputs, flat-pass
+  restoration and keeping display-mode changes outside GPU frames.
+
+Conker3DSRecomp renderer design reference:
+  Raihwy3 and contributors — https://github.com/Raihwy3/Conker3DSRecomp
+  Referenced tagged HUD routing, isolated console text buffers, and vertically
+  supersampled stereo output. The Sly HUD and dialogue rendering here use
+  ProjectCane's own batches, fonts, portraits and animation.
 
 Startup updater third-party dependencies:
   - jsmn (MIT License) — https://github.com/zserge/jsmn

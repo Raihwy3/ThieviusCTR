@@ -199,7 +199,11 @@ void CaneTvNative(TV* tv) {
         if(i==first)CaneUiQuad(border,{x,top-ds},{xt,top-ds},{x,top},{xt,top},edge);
         if(i+1==last)CaneUiQuad(border,{x,bottom},{xb,bottom},{x,bottom+ds},{xb,bottom+ds},edge);
     }
-    caneHud.push_back({std::move(aperture),0,tv});CaneGlyphsNative(bands,0);CaneGlyphsNative(border,0);
+    const auto oldLayer=caneHudLayer;TV* oldPortrait=canePortraitContext;
+    if(caneBottomActive) {caneHudLayer=CaneHudLayer::Dialogue;canePortraitContext=tv;}
+    caneHud.push_back({std::move(aperture),0,tv,false,caneHudLayer,canePortraitContext});
+    CaneGlyphsNative(bands,0);CaneGlyphsNative(border,0);
+    caneHudLayer=oldLayer;canePortraitContext=oldPortrait;
 }
 void CaneWipeNative() {
     if(!g_psw || g_wipe.wipes==WIPES_Idle)return;

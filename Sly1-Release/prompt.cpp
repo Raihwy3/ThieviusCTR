@@ -37,6 +37,38 @@ extern bool CaneBinocInvertX3ds();
 extern void CaneSetBinocInvertX3ds(bool);
 extern bool CaneBinocInvertY3ds();
 extern void CaneSetBinocInvertY3ds(bool);
+extern int CaneDisplayMode3ds();
+extern int CaneRenderCap3ds();
+extern int CaneStereoStrength3ds();
+extern int CaneStereoOption3ds(int);
+extern void CaneAdjustStereoOption3ds(int,int);
+extern int CaneShadowSize3ds();
+extern bool CaneGyroEnabled3ds();
+extern int CaneGyroSensitivity3ds();
+extern void CaneCycleDisplayMode3ds(int);
+extern void CaneToggleRenderCap3ds();
+extern void CaneCycleStereoStrength3ds(int);
+extern void CaneToggleShadowDetail3ds();
+extern void CaneToggleGyro3ds();
+extern void CaneCycleGyroSensitivity3ds(int);
+extern void CaneCalibrateGyro3ds();
+extern bool CaneGyroCalibrating3ds();
+extern bool CaneBottomCoins3ds();
+extern bool CaneBottomHealth3ds();
+extern bool CaneBottomMonitor3ds();
+extern void CaneToggleBottomOption3ds(int);
+extern bool CaneSkipIntro3ds();
+extern bool CaneIntroSeen3ds();
+extern void CaneToggleSkipIntro3ds();
+static constexpr PRK PRK_NativeDisplayMenu=PRK_Unknown32;
+static constexpr PRK PRK_NativeBottom=PRK_CenterScreen;
+static constexpr RESPK RESPK_NativeDisplay=RESPK_InternalResolution;
+static constexpr RESPK RESPK_NativeStereo=RESPK_ResolutionScale;
+static constexpr RESPK RESPK_NativeShadows=RESPK_Fog;
+static constexpr RESPK RESPK_NativeRenderCap=RESPK_FrameRate;
+static constexpr RESPK RESPK_NativeGyro=RESPK_Vsync;
+static constexpr RESPK RESPK_NativeGyroSensitivity=RESPK_OutputGamma;
+static constexpr RESPK RESPK_NativeGyroCalibrate=RESPK_ResetVideo;
 // The fixed-screen native port uses the otherwise hidden GUI-style response
 // for controller artwork. It does not alter the game's PS2 GUI layout.
 static constexpr RESPK RESPK_ButtonIcons=RESPK_GuiStyle;
@@ -239,7 +271,11 @@ int KeyboardOrMouseBindingPressed(GLFWwindow* window)
 
 bool FMappingPrompt(PRK prk)
 {
-	return prk == PRK_KeyboardMapping || prk == PRK_ControllerMapping;
+	#ifdef __3DS__
+    return false; // The native keyboard-mapping slot is the Gyro submenu.
+#else
+    return prk == PRK_KeyboardMapping || prk == PRK_ControllerMapping;
+#endif
 }
 
 static PRD& OriginalPromptDescriptor(PRK prk)
@@ -247,8 +283,17 @@ static PRD& OriginalPromptDescriptor(PRK prk)
 #ifdef __3DS__
     // The desktop video page is the native Interface submenu; fixed display
     // settings are not exposed as unusable PC controls.
-    static RESPK interfaceResponses[]={RESPK_ButtonIcons,RESPK_Back};
-    static PRD interfaceMenu={"Interface",1.0f,1.0f,1,2,interfaceResponses};
+    static RESPK interfaceResponses[]={RESPK_ButtonIcons,RESPK_Video,RESPK_NativeStereo,RESPK_NativeShadows,RESPK_Msaa,RESPK_WindowMode,RESPK_Back};
+    static RESPK displayResponses[]={RESPK_NativeDisplay,RESPK_NativeRenderCap,RESPK_Back};
+    static PRD displayMenu={"Display",1.0f,1.0f,1,3,displayResponses};
+    if(prk==PRK_NativeDisplayMenu)return displayMenu;
+    static PRD interfaceMenu={"Graphics",1.0f,1.0f,1,7,interfaceResponses};
+    static RESPK bottomResponses[]={RESPK_TextureFiltering,RESPK_AnisotropicFiltering,RESPK_Monitor,RESPK_Back};
+    static PRD bottomMenu={"Bottom screen",1.0f,1.0f,1,4,bottomResponses};
+    if(prk==PRK_NativeBottom)return bottomMenu;
+    static RESPK stereoResponses[]={RESPK_KeyUp,RESPK_KeyDown,RESPK_KeyLeft,RESPK_KeyRight,RESPK_KeyL3,RESPK_KeyR3,RESPK_Back};
+    static PRD stereoMenu={"3D settings",1.0f,1.0f,1,7,stereoResponses};
+    if(prk==PRK_ControllerMapping)return stereoMenu;
     static RESPK controlResponses[]={
         RESPK_CutsceneSkipControls,
         RESPK_SwapBA,
@@ -256,9 +301,13 @@ static PRD& OriginalPromptDescriptor(PRK prk)
         RESPK_CameraInvertY,
         RESPK_BinocInvertX,
         RESPK_BinocInvertY,
+        RESPK_KeyboardMapping,
         RESPK_Back
     };
-    static PRD controlMenu={"Controls",1.0f,1.0f,1,7,controlResponses};
+    static PRD controlMenu={"Controls",1.0f,1.0f,1,8,controlResponses};
+    static RESPK gyroResponses[]={RESPK_NativeGyro,RESPK_NativeGyroSensitivity,RESPK_NativeGyroCalibrate,RESPK_Back};
+    static PRD gyroMenu={"Gyro aiming",1.0f,1.0f,1,4,gyroResponses};
+    if(prk==PRK_KeyboardMapping)return gyroMenu;
     if(prk==PRK_VideoMenu)return interfaceMenu;
     if(prk==PRK_ControlsMenu)return controlMenu;
 #endif
@@ -338,7 +387,11 @@ PRD& PrdPrompt(PRK prk)
 const char* PchzPromptTitle(PRK prk, const PRD& prd)
 {
 #ifdef __3DS__
-    if(prk==PRK_VideoMenu)return "Interface";
+    if(prk==PRK_NativeDisplayMenu)return "Display";
+    if(prk==PRK_VideoMenu)return "Graphics";
+    if(prk==PRK_NativeBottom)return "Bottom screen";
+    if(prk==PRK_ControllerMapping)return "3D settings";
+    if(prk==PRK_KeyboardMapping)return "Gyro aiming";
 #endif
 	if (!FLocalizedContent())
 		return prd.pchz;
@@ -1399,6 +1452,19 @@ void ExecutePrompt(PROMPT* pprompt, int direction)
             break;
         }
 
+        case PRK_CenterScreen:
+#ifdef __3DS__
+        if(response==RESPK_Back)SetPrompt(pprompt,PRP_Basic,PRK_VideoMenu);
+        else {
+            if(response==RESPK_TextureFiltering)CaneToggleBottomOption3ds(0);
+            else if(response==RESPK_AnisotropicFiltering)CaneToggleBottomOption3ds(1);
+            else if(response==RESPK_Monitor)CaneToggleBottomOption3ds(2);
+            rebuildPromptKeepingSelection();
+        }
+        return;
+#else
+        return;
+#endif
         case PRK_VideoMenu:
 #ifdef __3DS__
         if(response==RESPK_Back)SetPrompt(pprompt,PRP_Basic,PRK_OptionsMenu);
@@ -1406,6 +1472,12 @@ void ExecutePrompt(PROMPT* pprompt, int direction)
             CaneSetNewButtons3ds(!CaneUseNewButtons3ds());
             rebuildPromptKeepingSelection();
         }
+        else if(response==RESPK_Video)SetPrompt(pprompt,PRP_Basic,PRK_NativeDisplayMenu);
+        else if(response==RESPK_WindowMode) {CaneToggleSkipIntro3ds();rebuildPromptKeepingSelection();}
+        else if(response==RESPK_NativeStereo)SetPrompt(pprompt,PRP_Basic,PRK_ControllerMapping);
+        else if(response==RESPK_NativeShadows) {CaneToggleShadowDetail3ds();rebuildPromptKeepingSelection();}
+        else if(response==RESPK_NativeRenderCap) {CaneToggleRenderCap3ds();rebuildPromptKeepingSelection();}
+        else if(response==RESPK_Msaa)SetPrompt(pprompt,PRP_Basic,PRK_NativeBottom);
         return;
 #endif
         switch (response)
@@ -1674,7 +1746,17 @@ void ExecutePrompt(PROMPT* pprompt, int direction)
         case PRK_MemcardCreateError:
         case PRK_MemcardCardFull:
         case PRK_Unknown21:
+        closeSaveManagerPrompt();return;
         case PRK_Unknown32:
+#ifdef __3DS__
+        if(response==RESPK_Back)SetPrompt(pprompt,PRP_Basic,PRK_VideoMenu);
+        else {
+            if(response==RESPK_NativeDisplay)CaneCycleDisplayMode3ds(direction);
+            else if(response==RESPK_NativeRenderCap)CaneToggleRenderCap3ds();
+            rebuildPromptKeepingSelection();
+        }
+        return;
+#endif
         closeSaveManagerPrompt();
         return;
 
@@ -1974,6 +2056,7 @@ void ExecutePrompt(PROMPT* pprompt, int direction)
             CaneSetDialogueSkip3ds(!g_fSkipBinocDialogs);
             rebuildPromptKeepingSelection();
         }
+        else if(response==RESPK_KeyboardMapping) {SetPrompt(pprompt,PRP_Basic,PRK_KeyboardMapping);}
         else if(response==RESPK_SwapBA) {
             CaneSetSwapBA3ds(!CaneSwapBA3ds());
             rebuildPromptKeepingSelection();
@@ -2059,8 +2142,23 @@ void ExecutePrompt(PROMPT* pprompt, int direction)
         rebuildPromptKeepingSelection();
         return;
 
-		case PRK_KeyboardMapping:
-		case PRK_ControllerMapping:
+        case PRK_KeyboardMapping:
+#ifdef __3DS__
+        if(response==RESPK_NativeGyro)CaneToggleGyro3ds();
+        else if(response==RESPK_NativeGyroSensitivity)CaneCycleGyroSensitivity3ds(direction);
+        else if(response==RESPK_NativeGyroCalibrate)CaneCalibrateGyro3ds();
+        rebuildPromptKeepingSelection();return;
+#endif
+        case PRK_ControllerMapping:
+#ifdef __3DS__
+        if(response==RESPK_Back)SetPrompt(pprompt,PRP_Basic,PRK_VideoMenu);
+        else {
+            const RESPK entries[]={RESPK_KeyUp,RESPK_KeyDown,RESPK_KeyLeft,RESPK_KeyRight,RESPK_KeyL3,RESPK_KeyR3};
+            for(int i=0;i<6;++i)if(response==entries[i])CaneAdjustStereoOption3ds(i,direction);
+            rebuildPromptKeepingSelection();
+        }
+        return;
+#endif
 		if (response == RESPK_Back)
 		{
 			s_iKeyboardBindingCapture = -1;
@@ -2143,8 +2241,35 @@ void HidePrompt(PROMPT* pprompt)
 const char* AchzFromRespk(RESPK respk)
 {
 #ifdef __3DS__
+    if(respk==RESPK_Video)return g_prompt.prk==PRK_VideoMenu?"Display...":"Graphics...";
+    if(respk==RESPK_WindowMode)return !CaneIntroSeen3ds()?"Skip intro: Watch once first":CaneSkipIntro3ds()?"Skip intro: On":"Skip intro: Off";
     if(respk==RESPK_ExitToDesktop)return "Exit to Homebrew Launcher";
-    if(respk==RESPK_Video)return "Interface...";
+    if(respk==RESPK_KeyboardMapping)return "Gyro aiming...";
+    if(respk==RESPK_Msaa)return "Bottom screen...";
+    if(respk==RESPK_TextureFiltering)return CaneBottomCoins3ds()?"Coins: On":"Coins: Off";
+    if(respk==RESPK_AnisotropicFiltering)return CaneBottomHealth3ds()?"Health / lives: On":"Health / lives: Off";
+    if(respk==RESPK_Monitor)return CaneBottomMonitor3ds()?"Display: System monitor":"Display: Game HUD";
+    if(respk==RESPK_NativeDisplay) {
+        static char label[64];const char* names[]={"Native (400x240)","Wide (800x240)","3D (400x240/eye)","Supersampling","PICA-SR AA","PICA-SR sharpen","3D (400x480/eye)"};
+        std::snprintf(label,sizeof label,"Display: %s",names[CaneDisplayMode3ds()]);return label;
+    }
+    if(respk==RESPK_NativeRenderCap) {static char label[40];std::snprintf(label,sizeof label,"Render cap: %d FPS",CaneRenderCap3ds());return label;}
+    if(respk==RESPK_NativeStereo)return "3D settings...";
+    {
+        const RESPK entries[]={RESPK_KeyUp,RESPK_KeyDown,RESPK_KeyLeft,RESPK_KeyRight,RESPK_KeyL3,RESPK_KeyR3};
+        const char* names[]={"Stereo 3D","Strength","Auto convergence","Convergence","Pop-out limit","HUD depth"};
+        for(int i=0;i<6;++i)if(respk==entries[i]) {
+            static char label[64];const int value=CaneStereoOption3ds(i);
+            if(i==0 || i==2)std::snprintf(label,sizeof label,"%s: %s",names[i],value?"On":"Off");
+            else std::snprintf(label,sizeof label,"%s: %d%%",names[i],value);
+            return label;
+        }
+    }
+    if(respk==RESPK_NativeShadows)return CaneShadowSize3ds()==64?"Shadows: Low":"Shadows: Original";
+    if(respk==RESPK_NativeGyro)return CaneGyroEnabled3ds()?"Gyro aiming: On":"Gyro aiming: Off";
+    if(respk==RESPK_NativeGyroSensitivity) {static char label[40];std::snprintf(label,sizeof label,"Sensitivity: %d%%",CaneGyroSensitivity3ds());return label;}
+    if(respk==RESPK_NativeGyroCalibrate)return CaneGyroCalibrating3ds()?"Keep still...":"Calibrate gyro";
+    if(respk==RESPK_Video)return "Graphics...";
     if(respk==RESPK_ButtonIcons) {
         static char label[48];
         std::snprintf(label,sizeof(label),"Button icons: %s",CaneUseNewButtons3ds()?"New 3DS":"PS2");
@@ -2539,6 +2664,11 @@ void UpdatePromptActive(PROMPT* pprompt, JOY* pjoy)
     {
         const RESPK selectedResponse = promptResponses[pprompt->irespk];
         bool adjustable = prk == PRK_VideoMenu || prk == PRK_SoundMenu;
+#ifdef __3DS__
+        if(prk==PRK_KeyboardMapping)adjustable=selectedResponse!=RESPK_NativeGyroCalibrate;
+        if(prk==PRK_ControllerMapping)adjustable=true;
+        if(prk==PRK_NativeBottom || prk==PRK_NativeDisplayMenu)adjustable=true;
+#endif
 
         if (prk == PRK_ControlsMenu)
         {
@@ -2632,6 +2762,12 @@ void CancelPrompt(PROMPT* pprompt)
 
     switch (pprompt->prk)
     {
+#ifdef __3DS__
+        case PRK_NativeDisplayMenu:
+        case PRK_NativeBottom:
+        SetPrompt(pprompt,PRP_Basic,PRK_VideoMenu);
+        break;
+#endif
         case PRK_PauseMenu:
         SetPrompt(pprompt, PRP_Basic, PRK_Nil);
         break;
@@ -2656,6 +2792,10 @@ void CancelPrompt(PROMPT* pprompt)
 
 		case PRK_KeyboardMapping:
 		case PRK_ControllerMapping:
+#ifdef __3DS__
+        SetPrompt(pprompt,PRP_Basic,pprompt->prk==PRK_ControllerMapping?PRK_VideoMenu:PRK_ControlsMenu);
+        break;
+#endif
 		s_iKeyboardBindingCapture = -1;
 		s_fKeyboardBindingCaptureArmed = false;
 		SetPrompt(pprompt, PRP_Basic, PRK_ControlsMenu);
@@ -2917,7 +3057,6 @@ void DrawPrompt(PROMPT* pprompt)
         textBox.SetVerticalJust(JV_Top);
 
         selectedText.Draw(&textBox, nullptr);
-
         pprompt->pfont->PopScaling();
 
         if (prd.fVertical == 0)

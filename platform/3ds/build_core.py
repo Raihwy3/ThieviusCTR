@@ -22,6 +22,9 @@ EXCLUDED = {'main', 'sound', 'fmv', 'spu_reverb_xapo'}
 INITIAL = ['math', 'util', 'bis', 'bsp', 'geom', 'step', 'jt', 'jump',
            'steprun', 'aseg', 'asega', 'actseg', 'acp', 'acr', 'so', 'alo']
 arguments = sys.argv[1:]
+replace_archive = bool(arguments and arguments[0] == '--replace')
+if replace_archive:
+    arguments = arguments[1:]
 units = (sorted(p.stem for p in (ROOT / 'Sly1-Release').glob('*.cpp')
                 if p.stem not in EXCLUDED)
          if arguments == ['--all'] else arguments or INITIAL)
@@ -44,6 +47,8 @@ if not pch.exists() or pch.read_text() != pch_text:
 header_hash = hashlib.sha256(repr(flags).encode())
 for directory in (ROOT / 'Sly1-Release', ROOT / 'platform', ROOT / 'Libraries/include'):
     for path in sorted(directory.rglob('*')):
+        if path.relative_to(ROOT).as_posix().startswith('platform/3ds/vendor/PICASR/'):
+            continue  # runtime-only filter dependency; does not affect gameplay objects/PCH
         if path.is_file() and path.suffix in ('.h', '.hpp', '.inl'):
             header_hash.update(str(path.relative_to(ROOT)).encode())
             header_hash.update(path.read_bytes())
@@ -114,7 +119,8 @@ if not all(r['compiled'] for r in results):
     raise SystemExit(1)
 # Recreate the archive so a subset build never retains unrelated stale objects.
 archive = OUT / 'libcane-gameplay.a'
-archive.unlink(missing_ok=True)
+if not replace_archive:
+    archive.unlink(missing_ok=True)
 subprocess.run([str(DK / 'devkitARM/bin/arm-none-eabi-ar'), 'rcs', str(archive),
                 *[str(OUT / (r['unit'] + '.o')) for r in results]], check=True)
 print('Original gameplay archive:', archive)

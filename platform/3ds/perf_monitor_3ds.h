@@ -58,6 +58,8 @@ public:
         resetWindow();
     }
 
+    void setTargetFps(unsigned fps) { targetFps_ = (fps == 30u) ? 30u : 60u; }
+
     void restoreStdout() {
         if (!redirected_ || !consoleDotab_) return;
         std::fflush(stdout);
@@ -108,7 +110,8 @@ public:
 
         const double fps = std::clamp(double(winFrames_) * 1000.0 / dtMs, 0.0, 99.9);
         const double avgFrameMs = winFrames_ > 0 ? std::clamp(dtMs * invFrames, 0.0, 999.9) : 0.0;
-        const unsigned fpsPct = unsigned(std::clamp(fps / 30.0 * 100.0 + 0.5, 0.0, 999.0));
+        const double targetFps = double(targetFps_);
+        const unsigned fpsPct = unsigned(std::clamp(fps / targetFps * 100.0 + 0.5, 0.0, 999.0));
 
         const double cpuPct = std::clamp(winCpuMs_ / dtMs * 100.0, 0.0, 100.0);
         const double avgCpuMs = std::clamp(winCpuMs_ * invFrames, 0.0, 999.9);
@@ -136,8 +139,8 @@ public:
 
         if (winFrames_ > 0 || force) {
             const char* fpsColor = (fps >= 27.0) ? "32;1" : ((fps >= 20.0) ? "33;1" : "31;1");
-            conPrintf("\x1b[6;1H \x1b[37;1mFPS  %4.1f /30.0      frame %5.1f ms\x1b[0m ", fps, avgFrameMs);
-            printBarLine(7, 7, 20, fps / 30.0, fpsColor, std::min(fpsPct, 999u));
+            conPrintf("\x1b[6;1H \x1b[37;1mFPS  %4.1f /%2u.0      frame %5.1f ms\x1b[0m ", fps, targetFps_, avgFrameMs);
+            printBarLine(7, 7, 20, fps / targetFps, fpsColor, std::min(fpsPct, 999u));
 
             const char* cpuColor = (cpuPct < 70.0) ? "32;1" : ((cpuPct < 90.0) ? "33;1" : "31;1");
             conPrintf("\x1b[9;1H \x1b[37;1mCPU %5.1f%%          frame %5.1f ms\x1b[0m ", cpuPct, avgCpuMs);
@@ -170,6 +173,7 @@ public:
     }
 
 private:
+    unsigned targetFps_ = 60;
     static ssize_t redirectStdoutToStderr(struct _reent*, void*, const char* ptr, size_t len) {
         if (ptr && len > 0u && stderr) std::fwrite(ptr, 1, len, stderr);
         return ssize_t(len);

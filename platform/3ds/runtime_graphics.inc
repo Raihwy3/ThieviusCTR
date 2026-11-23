@@ -2,12 +2,18 @@
 // animation, hidden flags, visibility and object lifetime; no scene snapshot.
 #include <citro3d.h>
 #include "fmv_decode_3ds.h"
+#include "native_display_math.inc"
+#include "native_texture_etc.inc"
+extern "C" {
+#include "vendor/PICASR/fsr3ds.inc"
+}
 #include <map>
 #include <unordered_map>
 #include <set>
 #include <cstring>
 #include <malloc.h>
 extern "C" {extern const unsigned char cane_shader[],cane_shader_end[];}
+extern "C" {extern const unsigned char cane_movie_shader[],cane_movie_shader_end[];}
 #include "font.h"
 #include "assets/buttons-new-3ds.inc"
 #include "coin.h"
@@ -37,7 +43,17 @@ void CaneCelNative(const RPLCEL& packet) {
     if(caneTvContext || !packet.palo || !packet.pglob || caneCelPackets.size()>=4096)return;
     caneCelPackets.push_back(packet);
 }
-struct CaneHudBatch {std::vector<BLOTLINEVERTEX> vertices;GLuint texture;TV* tv=nullptr;bool additive=false;};
+enum class CaneHudLayer {Top,Coins,Health,Dialogue};
+static bool caneLoading=false;
+static const char* caneLoadingText="Loading...";
+static CaneHudLayer caneHudLayer=CaneHudLayer::Top;
+static TV* canePortraitContext=nullptr;
+static bool caneBottomAvailable=false,caneBottomActive=false;
+struct CaneHudBatch {
+    std::vector<BLOTLINEVERTEX> vertices;GLuint texture;TV* tv=nullptr;bool additive=false;
+    CaneHudLayer layer=CaneHudLayer::Top;TV* portrait=nullptr;
+    float scale=1,dx=0,dy=0;
+};
 static std::vector<CaneHudBatch> caneHud;
 static bool caneCompassClip=false,caneRectClip=false;
 static glm::vec4 caneClipRect(0);
@@ -52,7 +68,7 @@ void CaneGlyphsNativeAdditive(const std::vector<BLOTLINEVERTEX>& vertices,GLuint
     }
     auto clipped=caneCompassClip?CaneClipUi(vertices):vertices;
     if(caneRectClip)clipped=CaneClipRectUi(clipped);
-    if(!clipped.empty())caneHud.push_back({std::move(clipped),texture,nullptr,additive});
+    if(!clipped.empty())caneHud.push_back({std::move(clipped),texture,nullptr,additive,caneHudLayer,canePortraitContext});
 }
 void CaneGlyphsNative(const std::vector<BLOTLINEVERTEX>& vertices,GLuint texture) {
     CaneGlyphsNativeAdditive(vertices,texture,false);
@@ -67,6 +83,7 @@ void CaneQuadNative(float x,float y,float w,float h,GLuint texture,const glm::ve
     CaneGlyphsNative(vertices,texture);
 }
 #include "runtime_ui.inc"
+#include "runtime_bottom_ui.inc"
 RPL& CaneQueueNative(const RPL& packet) {
     if(packet.PFNDRAWRPL==PreTvContext)caneTvContext=packet.ptv;
     if(packet.PFNDRAWRPL==PostTvContext)caneTvContext=nullptr;
@@ -161,13 +178,30 @@ class CaneRuntimeGraphics {
     struct ShadowPass {unsigned firstSub,subCount,overlayFirst=0,overlayCount=0;glm::mat4 projection;float alpha;};
     struct CasterVert {const SUBGLOB* sub;const Vertex* vertices;};
     struct ParticleDraw {unsigned first,count;C3D_Tex* tex;bool additive;};
-    struct HudDraw {unsigned first,count;C3D_Tex* tex;TV* tv;bool additive=false;};
+    struct HudDraw {
+        unsigned first,count;C3D_Tex* tex;TV* tv;bool additive=false;
+        CaneHudLayer layer=CaneHudLayer::Top;
+        float scale=1,dx=0,dy=0;
+    };
     struct OutlineLine {glm::vec4 a,b,color;glm::vec2 offset;};
     struct ActivePose {size_t index;float weight;};
     DVLB_s* shader=nullptr;shaderProgram_s program{};
+    DVLB_s* movieShader=nullptr;shaderProgram_s movieProgram{};
+    bool movieProgramStarted=false;
+    int movieProjection=-1,movieTint=-1;
     C3D_RenderTarget* target=nullptr;
+    C3D_RenderTarget* rightTarget=nullptr;
+    C3D_RenderTarget* bottomTarget=nullptr;
+    PrintConsole* bottomConsole=nullptr;
+    std::vector<u16> bottomConsoleShadow;
+    bool bottomOutput=false;
+    C3D_Tex postTexture{};
+    C3D_RenderTarget* postTarget=nullptr;
+    bool postTextureReady=false;
+    int displayMode=0,displayRequest=-1,shadowSize=128;
+    bool stereoWasActive=false;
     bool started=false,programStarted=false;
-    int projection=-1,tint=-1;
+    int projection=-1,tint=-1,stereo=-1,filterOffset=-1,filterOffsetNegative=-1;
     struct PreLight {const LIGHT* light;glm::vec3 dir;glm::vec3 pos;float maxR;float maxRSq;bool isDir;};
     std::vector<PreLight> frameLights;
     struct WorkerScratch {
@@ -192,17 +226,21 @@ class CaneRuntimeGraphics {
     C3D_Tex newButtonTexture{};
     int buttonImage=-1;
     uint16_t* texStage=nullptr;size_t texStageBytes=0;
-    unsigned vramTexCount=0,fcramTexCount=0;
+    unsigned vramTexCount=0,fcramTexCount=0,etcTexCount=0;
+    size_t vramTextureBytes=0,fcramTextureBytes=0,textureSavedBytes=0;
+    static constexpr size_t kVramTextureBudget=3*1024*1024;
     struct ShadowMap {C3D_Tex texture{};C3D_RenderTarget* target=nullptr;};
     ShadowMap shadowMaps[4];
     struct TexSlot {C3D_Tex tex{};bool loaded=false;bool inVram=false;};
     std::vector<TexSlot> textures;
+    std::vector<cane_texture_etc::PreparedImage> preparedImages;
     std::unordered_map<GLuint,int> glTexToImage;
     std::unordered_map<GlobKey,GlobCache,GlobKeyHash> globCaches;
     std::unordered_map<const SUBGLOB*,IndexBuf> indexBuffers;
     struct CelCache {const CELPOINT* source=nullptr;size_t count=0;GLuint vao=0;std::vector<unsigned> indices,first;};
     std::unordered_map<const GLOB*,CelCache> celCaches;
     Vertex* dynamic[2]{};size_t dynamicCapacity=0,meshBytes=0;
+    Vertex* postQuad=nullptr;
     uint16_t* batchIndices[2]{};size_t batchIndexCapacity=0;
     unsigned slot=0,frame=0;
     std::vector<Draw> phaseBuckets[RP_Max],tvDraws;
@@ -334,11 +372,21 @@ class CaneRuntimeGraphics {
         unsigned width=8,height=8,maximum=atlas?1024:limit;
         while(width<source.bmpWidth && width<maximum)width*=2;
         while(height<source.bmpHeight && height<maximum)height*=2;
-        const GPU_TEXCOLOR fmt=textAtlas?GPU_LA8:smoothAlpha?GPU_RGBA4:GPU_RGBA5551;
-        const size_t bytes=size_t(width)*height*2;
+        GPU_TEXCOLOR fmt=textAtlas?GPU_LA8:smoothAlpha?GPU_RGBA4:GPU_RGBA5551;
+        size_t bytes=size_t(width)*height*2;
+        std::vector<uint8_t> compressed;
+        if(!atlas && size_t(image)<preparedImages.size()) {
+            for(auto& prepared:preparedImages[image]) {
+                if(prepared.width==width && prepared.height==height && !prepared.data.empty()) {
+                    compressed.swap(prepared.data);fmt=GPU_ETC1;
+                    textureSavedBytes+=bytes-compressed.size();bytes=compressed.size();++etcTexCount;break;
+                }
+            }
+        }
+        if(size_t(image)<preparedImages.size())preparedImages[image]={};
         C3D_Tex tex{};
         bool inVram=false;
-        if(!atlas && vramSpaceFree()>=bytes+512*1024) {
+        if(!atlas && vramTextureBytes+bytes<=(displayMode==6?1024*1024:kVramTextureBudget) && vramSpaceFree()>=bytes+1024*1024) {
             inVram=C3D_TexInitVRAM(&tex,width,height,fmt);
         }
         if(!inVram && !C3D_TexInit(&tex,width,height,fmt))throw std::runtime_error("Actor texture allocation failed");
@@ -352,10 +400,10 @@ class CaneRuntimeGraphics {
                 texStageBytes=bytes;
             }
             out=texStage;
-            ++vramTexCount;
+            ++vramTexCount;vramTextureBytes+=bytes;
         } else {
             out=static_cast<uint16_t*>(slotEntry.tex.data);
-            ++fcramTexCount;
+            ++fcramTexCount;fcramTextureBytes+=bytes;
         }
         // Extend ink colour through transparent padding so linear sampling
         // does not multiply edge coverage by a second dark colour fringe.
@@ -365,7 +413,8 @@ class CaneRuntimeGraphics {
             for(size_t i=0;i<source.diffuseTexture.size();i+=4)glyphInk=std::max(glyphInk,unsigned(source.diffuseTexture[i]));
         }
 
-        for(unsigned y=0;y<height;++y)for(unsigned x=0;x<width;++x) {
+        if(!compressed.empty())std::memcpy(out,compressed.data(),compressed.size());
+        else for(unsigned y=0;y<height;++y)for(unsigned x=0;x<width;++x) {
             unsigned sx=x*source.bmpWidth/width,sy=y*source.bmpHeight/height;
             auto p=pixel(source,sx,sy);
             unsigned index=((y/8)*(width/8)+x/8)*64+morton(x,y);
@@ -746,6 +795,10 @@ class CaneRuntimeGraphics {
         for(size_t i=0;i<src.size();++i) {
             const auto& input=src[i];auto& vertex=dst[i];
             std::memcpy(vertex.position,&input.position,sizeof vertex.position);
+            if(job.hud->layer!=CaneHudLayer::Top) {
+                vertex.position[0]=vertex.position[0]*job.hud->scale+job.hud->dx;
+                vertex.position[1]=vertex.position[1]*job.hud->scale+job.hud->dy;
+            }
             vertex.uv[0]=input.uv.x;vertex.uv[1]=1.0f-input.uv.y;
             setVertexColor(vertex,input.color.r,input.color.g,input.color.b,input.color.a);
         }
@@ -951,10 +1004,20 @@ class CaneRuntimeGraphics {
         constexpr float k=1.0f/255.0f;
         C3D_FVUnifSet(GPU_VERTEX_SHADER,tint,r*k,g*k,b*k,a*k);
     }
+    void setStereo(float z=0,float w=0,float limit=0) {
+        C3D_FVUnifSet(GPU_VERTEX_SHADER,stereo,z,w,limit,0);
+    }
+    void bindGameplayProgram() {
+        // Native/wide 2D keeps the original GPU program.
+        C3D_BindProgram(displayMode==2 || displayMode==6 || postTarget?&program:&movieProgram);
+    }
     void unlitState() {
+        setStereo();
+        if(filterOffset>=0)C3D_FVUnifSet(GPU_VERTEX_SHADER,filterOffset,0,0,0,0);
+        if(filterOffsetNegative>=0)C3D_FVUnifSet(GPU_VERTEX_SHADER,filterOffsetNegative,0,0,0,0);
         // UI and movies must not inherit the world's extra alpha sampler,
         // material coefficients, stencil masks or additive blend operation.
-        C3D_BindProgram(&program);
+        bindGameplayProgram();
         C3D_TexBind(1,&white);C3D_TexBind(2,&white);
         for(int stage=0;stage<6;++stage)C3D_TexEnvInit(C3D_GetTexEnv(stage));
         auto* env=C3D_GetTexEnv(0);
@@ -968,16 +1031,125 @@ class CaneRuntimeGraphics {
     }
 public:
     unsigned packetCount=0,triangleCount=0,hudVertexCount=0,drawCallCount=0;float cpuMs=0,drawCmdMs=0,frameMs=0,gpuMs=0,updateMs=0;
+    void attachBottomConsole(PrintConsole* console) {
+        bottomConsole=console;
+        if(!console || !console->frameBuffer)return;
+        bottomConsoleShadow.assign(console->frameBuffer,console->frameBuffer+320*240);
+        console->frameBuffer=bottomConsoleShadow.data();
+        // Keep console writes in RAM, as in Conker's dual-screen renderer;
+        // they must never overwrite a GPU-rendered bottom framebuffer.
+        bottomTarget=C3D_RenderTargetCreate(240,320,GPU_RB_RGBA8,GPU_RB_DEPTH24_STENCIL8);
+        caneBottomAvailable=bottomTarget!=nullptr;
+        caneBottomActive=caneBottomAvailable && !CaneBottomMonitor3ds();
+        std::fprintf(stderr,"Bottom HUD target: %s\n",caneBottomAvailable?"ready":"unavailable; using monitor");
+    }
+    template<class Progress> bool prepareTextureCache(Progress progress) {
+        const u64 start=osGetTime();
+        std::fprintf(stderr,"Preparing texture cache: %lu images\n",(unsigned long)g_abmp.size());
+        uint64_t fingerprint=14695981039346656037ull;
+        for(const auto& source:g_abmp) {
+            const uint64_t meta[]={uint64_t(source.bmpWidth),uint64_t(source.bmpHeight),uint64_t(source.textureFormat),uint64_t(source.diffuseTexture.size())};
+            fingerprint=cane_texture_etc::hashBytes(reinterpret_cast<const uint8_t*>(meta),sizeof meta,fingerprint);
+            fingerprint=cane_texture_etc::hashBytes(source.diffuseTexture.data(),source.diffuseTexture.size(),fingerprint);
+        }
+        char bundle[160];std::snprintf(bundle,sizeof bundle,"sdmc:/3ds/ThieviusCTR/Cache/Textures/world-v1-%016llx.bin",(unsigned long long)fingerprint);
+        preparedImages.clear();preparedImages.resize(g_abmp.size());
+        if(cane_texture_etc::loadBundle(bundle,fingerprint,preparedImages)) {
+            progress(unsigned(g_abmp.size()),unsigned(g_abmp.size()));
+            std::fprintf(stderr,"Texture cache bundle loaded in %llu ms\n",(unsigned long long)(osGetTime()-start));return true;
+        }
+        // A missing cache is normal on an ISO-only installation. Encoding
+        // every image here blocks startup and delays the pending cutscene.
+        // Keep original textures on cache misses; never require a CPU texture
+        // conversion pass before gameplay or movie playback can proceed.
+        progress(unsigned(g_abmp.size()),unsigned(g_abmp.size()));
+        std::fprintf(stderr,"Texture cache absent: using original textures without startup encoding\n");
+        return true;
+    }
+    void applyGameplayDisplay(int requested) {
+        requested=std::clamp(requested,0,6);
+        if(target && displayRequest==requested && gfxIs3D()==(displayMode==2 || displayMode==6) && gfxIsWide()==(displayMode==1))return;
+        C3D_FrameSync();
+        if(postTarget) {C3D_RenderTargetDelete(postTarget);postTarget=nullptr;}
+        if(postTextureReady) {C3D_TexDelete(&postTexture);postTextureReady=false;}
+        if(target) {C3D_RenderTargetDetachOutput(target);C3D_RenderTargetDelete(target);target=nullptr;}
+        if(rightTarget) {C3D_RenderTargetDetachOutput(rightTarget);C3D_RenderTargetDelete(rightTarget);rightTarget=nullptr;}
+        displayRequest=requested;displayMode=requested;
+        if(requested==6) {
+            // Switching into two large eye targets must not fail just because
+            // replaceable world textures already occupy VRAM. Keep texture
+            // objects/pointers stable while moving their storage to FCRAM.
+            for(auto& item:textures)if(item.loaded && item.inVram) {
+                C3D_Tex replacement=item.tex;
+                replacement.data=linearAlloc(item.tex.size);
+                if(!replacement.data)throw std::runtime_error("Stereo texture relocation failed");
+                std::memcpy(replacement.data,item.tex.data,item.tex.size);
+                GSPGPU_FlushDataCache(replacement.data,item.tex.size);
+                const size_t bytes=item.tex.size;
+                C3D_TexDelete(&item.tex);item.tex=replacement;item.inVram=false;
+                --vramTexCount;++fcramTexCount;vramTextureBytes-=bytes;fcramTextureBytes+=bytes;
+            }
+            for(auto& map:shadowMaps) {if(map.target)C3D_RenderTargetDelete(map.target);if(map.texture.data)C3D_TexDelete(&map.texture);map={};}
+        }
+        u8 model=CFG_MODEL_3DS;
+        if(R_SUCCEEDED(cfguInit())) {CFGU_GetSystemModel(&model);cfguExit();}
+        if((requested==1 && !canUseWideMode3ds()) ||
+           ((requested==2 || requested==6) && (model==CFG_MODEL_2DS || model==CFG_MODEL_N2DSXL)))displayMode=0;
+        const auto allocatePostTarget=[&]() {
+            if(displayMode<3 || displayMode>5)return true;
+            const bool ssaa=displayMode==3;
+            const int texW=ssaa?512:256,texH=ssaa?1024:512;
+            if(!C3D_TexInitVRAM(&postTexture,texW,texH,GPU_RGB565))return false;
+            postTextureReady=true;C3D_TexSetFilter(&postTexture,GPU_LINEAR,GPU_LINEAR);
+            postTarget=C3D_RenderTargetCreateFromTex(&postTexture,GPU_TEXFACE_2D,0,GPU_RB_DEPTH24_STENCIL8);
+            if(!postTarget) {C3D_TexDelete(&postTexture);postTextureReady=false;return false;}
+            return true;
+        };
+        const auto allocate=[&]() {
+            target=C3D_RenderTargetCreate(displayMode==6?480:240,displayMode==1?800:400,GPU_RB_RGBA8,GPU_RB_DEPTH24_STENCIL8);
+            if(!target)return false;
+            if(displayMode==2 || displayMode==6) {
+                rightTarget=C3D_RenderTargetCreate(displayMode==6?480:240,400,GPU_RB_RGBA8,GPU_RB_DEPTH24_STENCIL8);
+                if(!rightTarget) {C3D_RenderTargetDelete(target);target=nullptr;return false;}
+            }
+            if(!allocatePostTarget()) {
+                C3D_RenderTargetDelete(target);target=nullptr;return false;
+            }
+            return true;
+        };
+        if(!allocate()) {
+            displayMode=(requested==6)?2:0;
+            std::fprintf(stderr,"Display allocation fallback: requested=%d actual=%d\n",requested,displayMode);
+            if(!allocate())throw std::runtime_error("Native render target allocation failed");
+        }
+        gfxSetWide(displayMode==1);if(displayMode!=1)gfxSet3D(displayMode==2 || displayMode==6);
+        const u32 transfer=GX_TRANSFER_IN_FORMAT(GX_TRANSFER_FMT_RGBA8)|GX_TRANSFER_OUT_FORMAT(GX_TRANSFER_FMT_RGB8)|GX_TRANSFER_SCALING(displayMode==6?GX_TRANSFER_SCALE_X:GX_TRANSFER_SCALE_NO);
+        C3D_RenderTargetSetOutput(target,GFX_TOP,GFX_LEFT,transfer);
+        if(rightTarget)C3D_RenderTargetSetOutput(rightTarget,GFX_TOP,GFX_RIGHT,transfer);
+        g_gl.renderWidth=displayMode==1?800:400;
+        std::fprintf(stderr,"Gameplay display: requested=%d actual=%d (%dx%d, eyes=%d, post=%d)\n",requested,displayMode,g_gl.renderWidth,displayMode==6?480:240,(displayMode==2 || displayMode==6)?2:1,postTarget!=nullptr);
+    }
     void init() {
         if(!C3D_Init(0x200000))throw std::runtime_error("Citro3D initialization failed");started=true;
+        postQuad=static_cast<Vertex*>(linearAlloc(sizeof(Vertex)*6));
+        if(!postQuad)throw std::runtime_error("Post-process quad allocation failed");
         shader=DVLB_ParseFile((u32*)cane_shader,cane_shader_end-cane_shader);
         if(!shader||!shader->numDVLE)throw std::runtime_error("Native shader unavailable");
         shaderProgramInit(&program);programStarted=true;shaderProgramSetVsh(&program,&shader->DVLE[0]);
         C3D_BindProgram(&program);projection=shaderInstanceGetUniformLocation(program.vertexShader,"projection");
+        movieShader=DVLB_ParseFile((u32*)cane_movie_shader,cane_movie_shader_end-cane_movie_shader);
+        if(!movieShader || !movieShader->numDVLE)throw std::runtime_error("Original 2D movie shader unavailable");
+        shaderProgramInit(&movieProgram);movieProgramStarted=true;
+        shaderProgramSetVsh(&movieProgram,&movieShader->DVLE[0]);
+        movieProjection=shaderInstanceGetUniformLocation(movieProgram.vertexShader,"projection");
+        movieTint=shaderInstanceGetUniformLocation(movieProgram.vertexShader,"tint");
         tint=shaderInstanceGetUniformLocation(program.vertexShader,"tint");
-        target=C3D_RenderTargetCreate(240,400,GPU_RB_RGBA8,GPU_RB_DEPTH24_STENCIL8);
-        if(!target)throw std::runtime_error("Native render target allocation failed");
-        C3D_RenderTargetSetOutput(target,GFX_TOP,GFX_LEFT,GX_TRANSFER_IN_FORMAT(GX_TRANSFER_FMT_RGBA8)|GX_TRANSFER_OUT_FORMAT(GX_TRANSFER_FMT_RGB8));
+        if(projection!=movieProjection || tint!=movieTint)
+            throw std::runtime_error("2D/stereo shader uniform layouts differ");
+        stereo=shaderInstanceGetUniformLocation(program.vertexShader,"stereo");
+        filterOffset=shaderInstanceGetUniformLocation(program.vertexShader,"filterOffset");
+        filterOffsetNegative=shaderInstanceGetUniformLocation(program.vertexShader,"filterOffsetNegative");setStereo();
+        applyGameplayDisplay(CaneDisplayMode3ds());
         if(!C3D_TexInit(&white,8,8,GPU_RGBA5551))throw std::runtime_error("Native fallback texture allocation failed");
         std::memset(white.data,255,128);C3D_TexFlush(&white);
         auto* attr=C3D_GetAttrInfo();AttrInfo_Init(attr);
@@ -1038,10 +1210,15 @@ public:
         C3D_Mtx ortho;Mtx_OrthoTilt(&ortho,0,displayW,240,0,0,1,true);ortho.r[2]=FVec4_New(0,0,0,-.5f);
         C3D_FrameBegin(syncDraw?C3D_FRAME_SYNCDRAW:0);C3D_RenderTargetClear(drawTarget,isWideTarget?C3D_CLEAR_COLOR:C3D_CLEAR_ALL,0x000000ff,0);C3D_FrameDrawOn(drawTarget);
         unlitState();
-        C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER,projection,&ortho);setTint(1,1,1,1);
+        // Movies retain the exact pre-stereo shader: no 3D branch, disparity
+        // uniforms or post-process sample offsets enter their GPU pipeline.
+        C3D_BindProgram(&movieProgram);
+        C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER,movieProjection,&ortho);
+        C3D_FVUnifSet(GPU_VERTEX_SHADER,movieTint,1,1,1,1);
         C3D_DepthTest(false,GPU_ALWAYS,GPU_WRITE_COLOR);
         auto* buf=C3D_GetBufInfo();BufInfo_Init(buf);BufInfo_Add(buf,vertices,sizeof(Vertex),3,0x210);
         C3D_TexBind(0,tex);C3D_DrawArrays(GPU_TRIANGLES,0,6);C3D_FrameEnd(0);
+        bindGameplayProgram();
     }
     struct FmvDrawState {
         CaneRuntimeGraphics* gfx=nullptr;
@@ -1218,6 +1395,25 @@ public:
     }
     unsigned draw() {
         if(!g_psw || !g_pcm)return 0;
+        applyGameplayDisplay(CaneDisplayMode3ds());
+        caneBottomActive=caneBottomAvailable && (!CaneBottomMonitor3ds() || CaneDialogueOnBottom3ds() || caneLoading);
+        if(caneBottomActive!=bottomOutput) {
+            C3D_FrameSync();
+            if(caneBottomActive)C3D_RenderTargetSetOutput(bottomTarget,GFX_BOTTOM,GFX_LEFT,
+                GX_TRANSFER_IN_FORMAT(GX_TRANSFER_FMT_RGBA8)|GX_TRANSFER_OUT_FORMAT(GX_TRANSFER_FMT_RGB565));
+            else C3D_RenderTargetDetachOutput(bottomTarget);
+            bottomOutput=caneBottomActive;
+        }
+        if(!bottomOutput && bottomConsole && !bottomConsoleShadow.empty()) {
+            void* fb=gfxGetFramebuffer(GFX_BOTTOM,GFX_LEFT,nullptr,nullptr);
+            std::memcpy(fb,bottomConsoleShadow.data(),bottomConsoleShadow.size()*sizeof(u16));
+            GSPGPU_FlushDataCache(fb,bottomConsoleShadow.size()*sizeof(u16));
+        }
+        if(shadowSize!=CaneShadowSize3ds()) {
+            C3D_FrameSync();
+            for(auto& map:shadowMaps) {if(map.target)C3D_RenderTargetDelete(map.target);if(map.texture.data)C3D_TexDelete(&map.texture);map={};}
+            shadowSize=CaneShadowSize3ds();
+        }
         u64 beginTick=svcGetSystemTick();
         u64 begin=osGetTime();++frame;slot^=1;
         for(int i=0;i<RP_Max;++i) {phaseBuckets[i].clear();staticBatches[i].clear();mergedDraws[i].clear();}
@@ -1226,6 +1422,7 @@ public:
         shadowPasses.clear();casterSubs.clear();particleDraws.clear();hudDraws.clear();outlineLines.clear();
         canePackets.clear();caneParticles.clear();caneCasters.clear();caneCelPackets.clear();caneTvContext=nullptr;
         caneHud.clear();SetupCm(g_pcm);
+        if(caneBottomActive)CaneBottomBackgroundNative();
         frameLights.clear();
         for(LIGHT* light=g_psw->dlLight.plightFirst;light && frameLights.size()<MAX_LIGHTS;light=light->dleLight.plightNext) {
             if(!FIsLoInWorld(light))continue;
@@ -1249,12 +1446,28 @@ public:
         for(int kind=0;kind<BLOTK_Max;++kind) {
             if(kind==BLOTK_Autosave)continue;
             BLOT* blot=PblotFromBlotk(kind);
+            // The original top-screen pop-ups keep their own timing and animation.
             if(blot && blot->blots!=BLOTS_Hidden && blot->pvtblot && blot->pvtblot->pfnDrawBlot)
                 blot->pvtblot->pfnDrawBlot(blot);
+            const bool persistent=caneBottomActive && !caneLoading &&
+                ((kind==BLOTK_Coin && CaneBottomCoins3ds()) ||
+                 (kind==BLOTK_Lives && CaneBottomHealth3ds())) &&
+                (g_ui.uisPlaying!=UIS_Attract && g_ui.uis!=UIS_Splash);
+            if(persistent && blot && blot->pfont && blot->pvtblot && blot->pvtblot->pfnDrawBlot) {
+                const float savedX=blot->x,savedY=blot->y,savedOn=blot->uOn;
+                const BLOTS savedState=blot->blots;
+                caneHudLayer=kind==BLOTK_Coin?CaneHudLayer::Coins:CaneHudLayer::Health;
+                blot->x=blot->xOn;blot->y=blot->yOn;blot->uOn=1;blot->blots=BLOTS_Visible;
+                blot->pvtblot->pfnDrawBlot(blot);
+                blot->x=savedX;blot->y=savedY;blot->uOn=savedOn;blot->blots=savedState;
+            }
+            caneHudLayer=CaneHudLayer::Top;canePortraitContext=nullptr;
         }
         caneCompassClip=false;caneRectClip=false;
         CaneWipeNative();
         if(g_autosave.pfont)DrawAutoSave(&g_autosave);
+        if(caneBottomActive)CaneBottomStatusNative();
+        CanePrepareBottomHud();
         pk[2]=svcGetSystemTick();
         C3D_Mtx projectionMatrix,view,combined;
         glm::vec3 eye=g_pcm->pos,forward=g_pcm->mat[0],cameraUp=g_pcm->mat[2];
@@ -1350,7 +1563,7 @@ public:
             C3D_Tex* ht=texture(imageForGlTex(hud.texture),true);
             wave1Used=(wave1Used+3u)&~3u;
             uint32_t hOff=uint32_t(wave1Used);
-            hudDraws.push_back({hOff,unsigned(hud.vertices.size()),ht,hud.tv,hud.additive});
+            hudDraws.push_back({hOff,unsigned(hud.vertices.size()),ht,hud.tv,hud.additive,hud.layer,hud.scale,hud.dx,hud.dy});
             if(!hud.vertices.empty())hudJobs.push_back({&hud,hOff});
             wave1Used+=hud.vertices.size();
         }
@@ -1686,7 +1899,7 @@ public:
             const auto& caster=caneCasters[mapIndex];SHADOW* shadow=caster.owner->pshadowGen;
             auto& map=shadowMaps[mapIndex];
             if(!map.target) {
-                if(!C3D_TexInitVRAM(&map.texture,128,128,GPU_RGBA8))throw std::runtime_error("Native shadow texture allocation failed");
+                if(!C3D_TexInitVRAM(&map.texture,shadowSize,shadowSize,GPU_RGBA8))throw std::runtime_error("Native shadow texture allocation failed");
                 C3D_TexSetFilter(&map.texture,GPU_LINEAR,GPU_LINEAR);
                 C3D_TexSetWrap(&map.texture,GPU_CLAMP_TO_BORDER,GPU_CLAMP_TO_BORDER);map.texture.border=0;
                 map.target=C3D_RenderTargetCreateFromTex(&map.texture,GPU_TEXFACE_2D,0,GPU_RB_DEPTH16);
@@ -1763,6 +1976,15 @@ public:
         if(frame%120==0)std::fprintf(stderr,"Native cel: packets=%u segments=%u lights=%u materials=%u\n",unsigned(caneCelPackets.size()),outlineSegments,unsigned(frameLights.size()),threeWayCount);
         hudVertexCount=0;for(const auto& hud:hudDraws)hudVertexCount+=hud.count;
         if(frame%120==0)std::fprintf(stderr,"Native binocular UI: state=%d portraits=%u vertices=%u\n",int(g_binoc.binocs),unsigned(tvDraws.size()),hudVertexCount);
+        if(frame%120==0) {
+            unsigned coins=0,health=0,dialogue=0,portraits=0;
+            for(const auto& h:hudDraws) {
+                if(h.layer==CaneHudLayer::Coins)coins+=h.count;
+                if(h.layer==CaneHudLayer::Health)health+=h.count;
+                if(h.layer==CaneHudLayer::Dialogue) {dialogue+=h.count;if(h.tv)++portraits;}
+            }
+            std::fprintf(stderr,"Bottom HUD: active=%d coins=%u health=%u dialogue=%u portraits=%u\n",int(caneBottomActive),coins,health,dialogue,portraits);
+        }
         unsigned wmOverlayFirst=0;
         if(!phaseBuckets[RP_WorldMap].empty()) {
             float pillarboxOpacity=1.0f;
@@ -1804,8 +2026,9 @@ public:
         if(frame<=2)std::fprintf(stderr,"frame %u: GPU draws=%u\n",frame,totalDraws);
         cpuMs=float(double(svcGetSystemTick()-beginTick)/268111.856);
         C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
+        bindGameplayProgram();
         u64 tBegin=osGetTime();
-        C3D_CullFace(GPU_CULL_NONE);
+        C3D_CullFace(GPU_CULL_NONE);setStereo();
         for(size_t i=0;i<shadowPasses.size();++i) {
             const auto& pass=shadowPasses[i];auto& map=shadowMaps[i];
             C3D_RenderTargetClear(map.target,C3D_CLEAR_ALL,0,0);C3D_FrameDrawOn(map.target);
@@ -1828,7 +2051,34 @@ public:
         const u32 skyClear=(u32(packByte(std::clamp(rgbaSky.r,0.0f,1.0f)))<<24)|
                            (u32(packByte(std::clamp(rgbaSky.g,0.0f,1.0f)))<<16)|
                            (u32(packByte(std::clamp(rgbaSky.b,0.0f,1.0f)))<<8)|0xffu;
-        C3D_RenderTargetClear(target,C3D_CLEAR_ALL,skyClear,0);C3D_FrameDrawOn(target);
+        unsigned drawCalls=0,mergedCallCount=0;
+        const float slider=(displayMode==2 || displayMode==6)?std::clamp(osGet3DSliderState(),0.f,1.f):0.f;
+        const bool stereoActive=(displayMode==2 || displayMode==6) && slider>.001f;
+        if(stereoActive!=stereoWasActive) {std::fprintf(stderr,"Stereo eyes: %d slider=%.2f\n",stereoActive?2:1,slider);stereoWasActive=stereoActive;}
+        // As in Eyes of Gold, keep LCD mode fixed for the lifetime of these
+        // targets. The physical slider selects visible stereo; it must not
+        // reconfigure gfx while a Citro3D frame is being submitted.
+        const float stereoReference=CaneStereoOption3ds(2) && g_pjt?glm::distance(g_pcm->pos,g_pjt->xf.posWorld):g_pcm->sNearClip*12;
+        for(int eyeIndex=0;eyeIndex<(stereoActive?2:1);++eyeIndex) {
+        C3D_RenderTarget* eyeTarget=postTarget?postTarget:(eyeIndex?rightTarget:target);
+        C3D_RenderTargetClear(eyeTarget,C3D_CLEAR_ALL,skyClear,0);C3D_FrameDrawOn(eyeTarget);
+        if(postTarget)C3D_SetViewport(0,0,displayMode==3?480:240,displayMode==3?800:400);
+        unlitState();C3D_AlphaTest(true,GPU_GREATER,24);
+        CaneStereoWarp eyeWarp{};
+        float skyStereoW=0;
+        if(stereoActive) {
+            auto& warp=eyeWarp;warp=CaneMakeStereoWarp(g_pcm->sNearClip,g_pcm->sFarClip,stereoReference,slider*CaneStereoStrength3ds()*.01f,eyeIndex);
+            // Derive disparity from the actual projection depth row rather
+            // than relying on an assumed handedness/depth convention.
+            const float b=projectionMatrix.r[2].w;
+            const float a=-projectionMatrix.r[2].z;
+            const float convergence=std::max(g_pcm->sNearClip*3,stereoReference*1.5f*CaneStereoOption3ds(3)*.01f);
+            const float k=(eyeIndex?1.f:-1.f)*stereoReference*.025f*slider*CaneStereoStrength3ds()*.01f;
+            skyStereoW=-k/convergence;
+            if(std::abs(b)>.000001f) {warp.z=k/b;warp.w=-k*(a/b+1/convergence);}
+            warp.limit*=CaneStereoOption3ds(4)*.01f;
+            setStereo(warp.z,warp.w,warp.limit);
+        }
         const CanePacket* lastMaterial=nullptr;
         const C3D_Mtx* lastCamera=nullptr;
         bool lastWorldBaked=false;
@@ -1839,7 +2089,6 @@ public:
         int lastDepthWrite=-1;
         int currentTexMode=0;
         int lastCull=int(GPU_CULL_NONE);
-        unsigned drawCalls=0,mergedCallCount=0;
         auto setCull=[&](GPU_CULLMODE mode) {
             if(int(mode)!=lastCull) {C3D_CullFace(mode);lastCull=int(mode);}
         };
@@ -1935,7 +2184,7 @@ public:
                 drawCalls+=3;
                 return;
             }
-            if(draw.phase==RP_Foreground || draw.phase==RP_WorldMap) {
+            if(draw.phase==RP_Background || draw.phase==RP_Foreground || draw.phase==RP_WorldMap) {
                 if(lastDepthWrite!=-2) {
                     C3D_DepthTest(false,GPU_ALWAYS,GPU_WRITE_COLOR);
                     lastDepthWrite=-2;
@@ -1964,7 +2213,12 @@ public:
             }
             C3D_DrawElements(GPU_TRIANGLES,draw.count,C3D_UNSIGNED_SHORT,draw.indices);++drawCalls;
         };
+        bool skyStereo=false;
         for(int rp=0;rp<RP_Max;++rp) {
+            if(stereoActive && skyStereo!=(rp==RP_Background)) {
+                skyStereo=rp==RP_Background;
+                if(skyStereo)setStereo(0,skyStereoW,eyeWarp.limit);else setStereo(eyeWarp.z,eyeWarp.w,eyeWarp.limit);
+            }
             if(rp==RP_WorldMap)continue;
             if(!mergedDraws[rp].empty()) {
                 if(lastDepthWrite!=1) {C3D_DepthTest(true,GPU_GREATER,GPU_WRITE_ALL);lastDepthWrite=1;}
@@ -2041,9 +2295,10 @@ public:
             setTexMode(0);setCull(GPU_CULL_NONE);
         }
         C3D_AlphaTest(true,GPU_GREATER,0);
-        if(!hudDraws.empty()) {
+        auto drawHudLayer=[&](bool bottom) {
             unlitState();
-            C3D_Mtx ortho;Mtx_OrthoTilt(&ortho,0,400,240,0,0,1,true);
+            if(stereoActive && !bottom)setStereo(0,(eyeIndex?1.f:-1.f)*(CaneStereoOption3ds(5)-50)*.0004f*slider,.025f);
+            C3D_Mtx ortho;Mtx_OrthoTilt(&ortho,0,bottom?320:400,240,0,0,1,true);
             // PICA's visible clip-depth interval is [-w,0]. Keep 2D
             // glyphs inside it rather than exactly on the near clip plane.
             ortho.r[2]=FVec4_New(0,0,0,-.5f);
@@ -2054,6 +2309,7 @@ public:
             unsigned tvStencil=0;
             bool lastHudAdd=false;
             for(const auto& hud:hudDraws) {
+                if((hud.layer!=CaneHudLayer::Top)!=bottom)continue;
                 if(hud.additive!=lastHudAdd) {
                     C3D_AlphaBlend(GPU_BLEND_ADD,GPU_BLEND_ADD,GPU_SRC_ALPHA,hud.additive?GPU_ONE:GPU_ONE_MINUS_SRC_ALPHA,GPU_ONE,GPU_ZERO);
                     lastHudAdd=hud.additive;
@@ -2074,6 +2330,16 @@ public:
                     C3D_Mtx tvProjection,tvCamera;
                     Mtx_PerspTilt(&tvProjection,hud.tv->pspeakerDraw->radFov,1280.0f/720.0f,std::max(.01f,g_pcm->sNearClip),g_pcm->sFarClip,false);
                     Mtx_Multiply(&tvCamera,&tvProjection,&view);
+                    if(bottom) {
+                        // Apply the same screen-space placement to the 3D
+                        // speaker and its original animated stencil aperture.
+                        C3D_Mtx placement,placed;Mtx_Identity(&placement);
+                        placement.r[0].x=hud.scale;
+                        placement.r[0].w=1-hud.scale-2*hud.dy/240.f;
+                        placement.r[1].y=hud.scale*400.f/320.f;
+                        placement.r[1].w=1-hud.scale*400.f/320.f-2*hud.dx/320.f;
+                        Mtx_Multiply(&placed,&placement,&tvCamera);tvCamera=placed;
+                    }
                     lastMaterial=nullptr;lastCamera=nullptr;lastWorldBaked=false;lastBuf=nullptr;lastTex0=nullptr;lastTex1=nullptr;lastTex2=nullptr;lastDepthWrite=-1;
                     currentTexMode=0;lastCull=int(GPU_CULL_NONE);
                     for(const auto& draw:tvDraws)if(draw.material->tv==hud.tv)drawMesh(draw,tvCamera);
@@ -2087,12 +2353,68 @@ public:
                 } else {C3D_TexBind(0,hud.tex?hud.tex:&white);C3D_DrawArrays(GPU_TRIANGLES,hud.first,hud.count);}
             }
             if(lastHudAdd)C3D_AlphaBlend(GPU_BLEND_ADD,GPU_BLEND_ADD,GPU_SRC_ALPHA,GPU_ONE_MINUS_SRC_ALPHA,GPU_ONE,GPU_ZERO);
+        };
+        if(!hudDraws.empty())drawHudLayer(false);
+        if(postTarget) {
+            C3D_FrameSplit(0);
+            C3D_SetViewport(0,0,240,400);
+            C3D_FrameDrawOn(target);
+            unlitState();
+            C3D_Mtx postOrtho;Mtx_OrthoTilt(&postOrtho,0,400,240,0,0,1,true);
+            postOrtho.r[2]=FVec4_New(0,0,0,-.5f);
+            C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER,projection,&postOrtho);
+            setTint(1,1,1,1);C3D_DepthTest(false,GPU_ALWAYS,GPU_WRITE_COLOR);
+            C3D_AlphaTest(false,GPU_ALWAYS,0);
+            C3D_AlphaBlend(GPU_BLEND_ADD,GPU_BLEND_ADD,GPU_ONE,GPU_ZERO,GPU_ONE,GPU_ZERO);
+            C3D_TexSetFilter(&postTexture,GPU_LINEAR,GPU_LINEAR);
+            C3D_TexBind(0,&postTexture);C3D_TexBind(1,&postTexture);C3D_TexBind(2,&postTexture);
+            const float maxU=displayMode==3?480.0f/512.0f:240.0f/256.0f;
+            const float maxV=displayMode==3?800.0f/1024.0f:400.0f/512.0f;
+            const float du=1.0f/(displayMode==3?512.0f:256.0f);
+            // Never overwrite scene vertices while the GPU is using them.
+            auto* q=postQuad;
+            const float xy[6][2]={{0,0},{400,0},{0,240},{0,240},{400,0},{400,240}};
+            // The GPU framebuffer is portrait/tilted even though the game
+            // coordinates are landscape. Undo that rotation when sampling.
+            const float uv[6][2]={{maxU,0},{maxU,maxV},{0,0},{0,0},{maxU,maxV},{0,maxV}};
+            for(unsigned i=0;i<6;++i) {
+                // Native-resolution filter output needs the opposite screen
+                // X direction. Correct only this presentation quad, keeping
+                // scene projection, stereo and the SSAA resolve unchanged.
+                q[i].position[0]=displayMode>=4?400-xy[i][0]:xy[i][0];
+                q[i].position[1]=xy[i][1];q[i].position[2]=0;
+                std::memset(q[i].color,255,4);q[i].uv[0]=uv[i][0];q[i].uv[1]=uv[i][1];
+            }
+            GSPGPU_FlushDataCache(q,sizeof(Vertex)*6);
+            auto* blitBuf=C3D_GetBufInfo();BufInfo_Init(blitBuf);BufInfo_Add(blitBuf,q,sizeof(Vertex),3,0x210);
+            C3D_FVUnifSet(GPU_VERTEX_SHADER,filterOffset,du,0,0,0);
+            C3D_FVUnifSet(GPU_VERTEX_SHADER,filterOffsetNegative,-du,0,0,0);
+            if(displayMode==4)fsr3dsTevKernel(FSR3DS_KERNEL_AA_EDGE_APPLY,160);
+            else if(displayMode==5)fsr3dsTevKernel(FSR3DS_KERNEL_LITE,0);
+            else fsr3dsTevModulate();
+            C3D_DrawArrays(GPU_TRIANGLES,0,6);
+            unlitState();
+            C3D_AlphaBlend(GPU_BLEND_ADD,GPU_BLEND_ADD,GPU_SRC_ALPHA,GPU_ONE_MINUS_SRC_ALPHA,GPU_ONE,GPU_ZERO);
+            C3D_AlphaTest(true,GPU_GREATER,0);C3D_DepthTest(true,GPU_GREATER,GPU_WRITE_COLOR);
         }
+        if(bottomOutput && eyeIndex==(stereoActive?1:0)) {
+            C3D_RenderTargetClear(bottomTarget,C3D_CLEAR_ALL,0x03070eff,0);
+            C3D_FrameDrawOn(bottomTarget);
+            drawHudLayer(true);
+        }
+        } // eye pass; simulation, animation, culling and shadows ran once.
+        setStereo();
         C3D_AlphaTest(true,GPU_GREATER,24);
         u64 tDrawEnd=osGetTime();
         C3D_FrameEnd(0);u64 tEnd=osGetTime();frameMs=float(tEnd-begin);gpuMs=C3D_GetDrawingTime();drawCmdMs=C3D_GetProcessingTime();drawCallCount=drawCalls;
+        if(frame%120==0)std::fprintf(stderr,"Texture memory: vram=%lu/%luKiB linear=%luKiB ETC1=%u saved=%luKiB targets=%dKiB shadows=%uKiB\n",
+            (unsigned long)(vramTextureBytes/1024),(unsigned long)(kVramTextureBudget/1024),(unsigned long)(fcramTextureBytes/1024),etcTexCount,(unsigned long)(textureSavedBytes/1024),displayMode==0?750:1500,unsigned(std::count_if(std::begin(shadowMaps),std::end(shadowMaps),[](const ShadowMap& map){return map.texture.data!=nullptr;}))*shadowSize*shadowSize*6/1024);
         if(frame%120==0)std::fprintf(stderr,"Profile ms: upd=%.1f sw=%lu prep=%lu begin=%lu draw=%lu end=%lu dynVerts=%lu draws=%u merged=%u calls=%u flat=%u/%u/%u | ui=%.1f blots=%.1f setup=%.1f w1=%.1f shset=%.1f w2=%.1f fin=%.1f wk=[%u:%.1f,%u:%.1f] vram=%u/%u\n",double(updateMs),(unsigned long)(tSw-t0),(unsigned long)(tMesh-tSw),(unsigned long)(tBegin-tMesh),(unsigned long)(tDrawEnd-tBegin),(unsigned long)(tEnd-tDrawEnd),(unsigned long)used,totalDraws,mergedCallCount,drawCalls,animFlattens,movedFlattens,newFlattens,double(pk[1]-pk[0])/268111.856,double(pk[2]-pk[1])/268111.856,double(pk[3]-pk[2])/268111.856,double(pk[4]-pk[3])/268111.856,double(pk[5]-pk[4])/268111.856,double(pk[6]-pk[5])/268111.856,double(pk[7]-pk[6])/268111.856,workerCount>0?workers[0].jobsDone:0u,workerCount>0?double(workers[0].busyTicks)/268111.856:0.0,workerCount>1?workers[1].jobsDone:0u,workerCount>1?double(workers[1].busyTicks)/268111.856:0.0,vramTexCount,vramTexCount+fcramTexCount);
         return packetCount;
+    }
+    void showLoading(const char* text="Loading...") {
+        if(!g_psw || !g_pcm)return;
+        caneLoadingText=text;caneLoading=true;draw();C3D_FrameSync();caneLoading=false;
     }
     void resetWorld() {
         C3D_FrameSync();
@@ -2103,12 +2425,13 @@ public:
         globCaches.clear();globCaches.rehash(0);
         indexBuffers.clear();indexBuffers.rehash(0);
         celCaches.clear();celCaches.rehash(0);
-        meshBytes=0;vramTexCount=0;fcramTexCount=0;
+        meshBytes=0;vramTexCount=0;fcramTexCount=0;etcTexCount=0;vramTextureBytes=fcramTextureBytes=textureSavedBytes=0;
         C3D_TexBind(0,&white);C3D_TexBind(1,&white);C3D_TexBind(2,&white);
         for(auto& item:textures)if(item.loaded)C3D_TexDelete(&item.tex);
         if(newButtonTexture.data)C3D_TexDelete(&newButtonTexture);newButtonTexture={};buttonImage=-1;
         for(auto& map:shadowMaps) {if(map.target)C3D_RenderTargetDelete(map.target);if(map.texture.data)C3D_TexDelete(&map.texture);map={};}
         textures.clear();textures.shrink_to_fit();
+        preparedImages.clear();preparedImages.shrink_to_fit();
         glTexToImage.clear();glTexToImage.rehash(0);
         for(int i=0;i<RP_Max;++i) {phaseBuckets[i].clear();staticBatches[i].clear();mergedDraws[i].clear();}
         for(auto& cv:casterDynVerts)cv.clear();
@@ -2119,11 +2442,26 @@ public:
         caneHud.clear();frame=0;
     }
     ~CaneRuntimeGraphics() {
+        if(started)C3D_FrameSync();
+        caneBottomAvailable=caneBottomActive=false;
+        if(bottomConsole && !bottomConsoleShadow.empty()) {
+            bottomConsole->frameBuffer=reinterpret_cast<u16*>(gfxGetFramebuffer(GFX_BOTTOM,GFX_LEFT,nullptr,nullptr));
+            std::memcpy(bottomConsole->frameBuffer,bottomConsoleShadow.data(),bottomConsoleShadow.size()*sizeof(u16));
+            GSPGPU_FlushDataCache(bottomConsole->frameBuffer,bottomConsoleShadow.size()*sizeof(u16));
+        }
+        if(bottomTarget) {C3D_FrameSync();C3D_RenderTargetDetachOutput(bottomTarget);C3D_RenderTargetDelete(bottomTarget);bottomTarget=nullptr;}
         shutdownWorkers();
         if(!started)return;resetWorld();
+        if(postTarget) {C3D_RenderTargetDelete(postTarget);postTarget=nullptr;}
+        if(postTextureReady) {C3D_TexDelete(&postTexture);postTextureReady=false;}
+        if(rightTarget) {C3D_RenderTargetDetachOutput(rightTarget);C3D_RenderTargetDelete(rightTarget);rightTarget=nullptr;}
+        if(target) {C3D_RenderTargetDetachOutput(target);C3D_RenderTargetDelete(target);target=nullptr;}
         for(auto* pointer:dynamic)if(pointer)linearFree(pointer);
         for(auto* pointer:batchIndices)if(pointer)linearFree(pointer);
         if(texStage)linearFree(texStage);
+        if(postQuad)linearFree(postQuad);
+        if(movieProgramStarted)shaderProgramFree(&movieProgram);
+        if(movieShader)DVLB_Free(movieShader);
         C3D_TexDelete(&white);
         if(programStarted)shaderProgramFree(&program);if(shader)DVLB_Free(shader);C3D_Fini();
     }

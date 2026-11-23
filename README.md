@@ -162,10 +162,19 @@ This produces `Cutscene_00.cmov`..`Cutscene_17.cmov` + `.wav` (`640×224` for wi
 All 3DS-specific preferences integrate into the game's built-in **Options** menu:
 
 - **Options > Sound**: Switch between **OpenDSP** (default, no dump needed) and **NDSP**, and adjust volumes / stereo output (saved in `audio-backend.cfg`).
-- **Options > Interface**: Choose **New 3DS** (default) or **PS2** button icons.
+- **Options > Graphics**: Choose **New 3DS** (default) or **PS2** button icons. Display modes include **400×240**, **800×240 2D**, per-eye stereoscopic 3D, **800×480 internal supersampling**, PICA-SR edge AA, or PICA-SR sharpening. These modes are mutually exclusive. Adjust 3D strength, Original/Low shadow maps, and a **30/60 FPS render cap**. The game simulation remains 30 Hz; the 60 FPS option lets the renderer submit frames at 60 FPS using the latest simulation state.
+  - The top screen shares its extra horizontal pixels between wide 2D and stereo: 800×240 **per eye** is not supported. The physical 3D slider controls depth in stereo mode; 2DS models cannot show stereo. Wide output falls back to 400×240 in the emulator, whose 800-column output is cropped. SSAA and PICA-SR modes need additional render-target memory; if allocation fails, the renderer falls back to native 400×240.
+  - **3D (400×480/eye)** renders twice the vertical resolution and downsamples to the panel. It uses more GPU time and VRAM than normal 3D. Both stereo modes use the same 3D settings submenu.
+  - Cutscenes keep their existing playback path. These display settings apply to the rendered game and menus.
 - **Options > Controls**: Configure **Swap B/A** (default **On**; swaps physical `B`/`A` and displayed icons), **Dialogue Skip Controls**, **Camera Invert X/Y** (X defaults **On**), and **Binoc Invert X/Y** (Y defaults **On**) (saved in `native-options.cfg`).
 
-The bottom screen displays a live **FPS / CPU / GPU / RAM** monitor (`HEAP`, `FCRAM`, and `VRAM` usage alongside frame, simulation, prep, command, and draw timings).
+The new display modes and gyro controls have passed emulator/host checks; console testing of depth and physical motion is still needed.
+
+**Options > Controls > Gyro aiming** enables motion aiming for the binoculars and sniper/aiming sections. It adds direct angular movement to the existing stick controls, with 25–400% sensitivity (100% is a 1× angular multiplier), a small jitter filter, and a nonblocking calibration action. Keep the console still for about 1.5 seconds when calibrating. Gyro is Off by default and does not steer regular third-person movement or menus.
+
+Existing ETC1 world-texture caches under `Cache/Textures/` can still be loaded. Missing caches immediately use the original texture format; synchronous startup encoding is disabled to avoid stalls before cutscenes on fresh ISO installations. Transparent textures, font atlases and UI retain their existing formats. Cache files derive from your own game data and are not included in release ZIPs. World textures have a 3 MiB VRAM budget, with overflow in linear RAM, reserving space for display targets and shadows.
+
+The bottom screen shows the original coin counter at the upper left and health/lives indicator at the upper right. Enabled counters stay visible during gameplay alongside the original top-screen pop-ups. Portrait conversations fill the bottom screen, with text above the animated character windows. Drag to control the gameplay camera or tap to advance dialogue. The title has Play/Options buttons; pause menus stay on the top screen. **Graphics > Bottom screen** provides separate counter toggles and a choice of game HUD or the **FPS / CPU / GPU / RAM** system monitor. Portrait conversations temporarily replace the monitor.
 
 ---
 
@@ -219,6 +228,8 @@ Full third-party license notices, upstream revisions, and LGPL v2.1 rebuild/reli
 | [**FFmpeg**](https://ffmpeg.org/) `7.1.1` | Stripped static `libavformat`/`libavcodec`/`libavutil` (`bink`, `binkaudio_dct`/`rdft`, `mpeg2video`) with `libavformat/bink.c` patch via `build_ffmpeg_3ds.py` | **GNU LGPL v2.1 or later** ([`LICENSE-FFmpeg-LGPL2.1.txt`](platform/3ds/LICENSE-FFmpeg-LGPL2.1.txt)) |
 | [**OpenDSP**](https://github.com/Cellenseres/OpenDSP) (`Cellenseres`) | Built-in open-source 3DS DSP firmware & library (rev `a15c8615`); MP3 tables/dataflows derive from [`minimp3`](https://github.com/lieff/minimp3/tree/ea99364f61c14656440e8d77e9c233ccf3124633) (CC0) | **BSD 2-Clause** ([`LICENSE`](platform/3ds/vendor/OpenDSP/LICENSE)) + **CC0** (`minimp3`) |
 | [**Eyes of Gold Launcher**](https://github.com/Raihwy3/eyes-of-gold) (`Raihwy3`) | Startup GitHub Release updater, PICA200 texture-coordinate reference, pinned OpenDSP vendor copy, dual-screen launcher inspiration | **MIT License** |
+| [**PICA-SR**](https://github.com/ponuno/PICASR-FSR-for-3DS) (`ponuno`) | Optional PICA200 edge-AA and sharpening TEV passes; used with permission from the author | Upstream repository has no license file; permission granted directly by the author |
+| [**Conker3DSRecomp**](https://github.com/Raihwy3/Conker3DSRecomp) | Design reference for tagged HUD routing, console text isolation and vertically supersampled stereo | Referenced (no code copied) |
 | [**jsmn**](https://github.com/zserge/jsmn) + **Mozilla CA Bundle** | Strict zero-alloc JSON parser & TLS root store for the startup updater ([`vendor/updater/`](platform/3ds/vendor/updater)) | **MIT** ([`jsmn-LICENSE.txt`](platform/3ds/vendor/updater/jsmn-LICENSE.txt)) + **MPL 2.0** ([`LICENSE-Mozilla-MPL-2.0.txt`](platform/3ds/LICENSE-Mozilla-MPL-2.0.txt)) |
 | [**3ds-curl**](https://curl.se/), **3ds-mbedtls**, **3ds-zlib / minizip** | devkitPro 3DS HTTPS, SHA-256, and ZIP extraction libraries for the startup updater | **MIT** (`curl`) / **Apache-2.0** (`Mbed TLS`) / **zlib** (`zlib`/`minizip`) |
 | [**devkitPro**](https://devkitpro.org/) / [**libctru**](https://github.com/devkitPro/libctru) / [**Citro3D**](https://github.com/devkitPro/citro3d) | 3DS toolchain, OS/hardware bindings, and PICA200 GPU library | **zlib License** |

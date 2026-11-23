@@ -8,6 +8,8 @@ extern void CaneCompassClipNative(bool);
 extern bool CaneUseNewButtons3ds();
 extern bool CaneBinocInvertX3ds();
 extern bool CaneBinocInvertY3ds();
+extern bool CaneDialogueOnBottom3ds();
+extern void CaneDialogueHudNative(bool);
 #endif
 #include "content.h"
 #include "aseg.h"
@@ -922,6 +924,9 @@ void SetBinocAchzDraw(BINOC* pbinoc, char* pchz)
 
         // Choose wrap width based on Binoc mode
         float wrapWidth = (pbinoc->binocs == BINOCS_Confront) ? 380.0f : 280.0f;
+#ifdef __3DS__
+        if(CaneDialogueOnBottom3ds())wrapWidth=576.0f;
+#endif
         rt.ClineWrap(wrapWidth);
         pbinoc->pfont->PopScaling();
 
@@ -935,7 +940,7 @@ void SetBinocAchzDraw(BINOC* pbinoc, char* pchz)
         int glyphIndex = 0;
         char ch;
         while ((ch = rt.ChNext()) != '\0') {
-            if (ch == '\n') {
+            if (ch == '\n' && pbinoc->cichLR < 32) {
                 pbinoc->aichLR[pbinoc->cichLR++] = glyphIndex;
             }
             glyphIndex++;
@@ -2372,6 +2377,13 @@ void DrawBinoc(BINOC* pbinoc)
     if (state == BINOCS_Instruct && pbinoc->achzDraw[0] == '\0')
         return;
 
+#ifdef __3DS__
+    const bool bottomDialogue=CaneDialogueOnBottom3ds();
+    CaneDialogueHudNative(true);
+#else
+    const bool bottomDialogue=false;
+#endif
+
     // Use the same centered virtual canvas as the mask, reticle, compass and
     // zoom overlay so all BINOC elements stay registered at every aspect.
     const float uiScale = g_gl.uiScale;
@@ -2407,7 +2419,7 @@ void DrawBinoc(BINOC* pbinoc)
 #else
     const float baseFontScale = state == BINOCS_Confront ? 0.8f : 1.0f;
 #endif
-    const float fontScale = baseFontScale * uiScale;
+    const float fontScale = bottomDialogue?.625f:baseFontScale * uiScale;
 
     pbinoc->pfont->PushScaling(fontScale, fontScale);
 
@@ -2415,10 +2427,11 @@ void DrawBinoc(BINOC* pbinoc)
     glm::vec4 colorEdge = pbinoc->pte != nullptr ? pbinoc->pte->m_rgba : glm::vec4(0.0f);
 
     const float textHeight = static_cast<float>(pbinoc->pfont->m_dyUnscaled) * pbinoc->pfont->m_ryScale;
-    const float boxWidth = UiSize(boxWidthVirtual);
+    if(bottomDialogue)visibleLineCount=3;
+    const float boxWidth = bottomDialogue?288.0f:UiSize(boxWidthVirtual);
     const float boxHeight = textHeight * static_cast<float>(visibleLineCount);
-    const float clipX = UiX(180.0f + offsetX);
-    const float clipY = UiY(386.80002f + offsetY);
+    const float clipX = bottomDialogue?16.0f:UiX(180.0f + offsetX);
+    const float clipY = bottomDialogue?56.0f:UiY(386.80002f + offsetY);
 
     CTextBox tbxClip;
     tbxClip.SetPos(clipX, clipY);
@@ -2444,7 +2457,7 @@ void DrawBinoc(BINOC* pbinoc)
         colorEdge.a *= uText;
     }
 
-    if (state == BINOCS_Instruct && pbinoc->pte != nullptr && pbinoc->pte->m_pfont != nullptr)
+    if (!bottomDialogue && state == BINOCS_Instruct && pbinoc->pte != nullptr && pbinoc->pte->m_pfont != nullptr)
     {
         const glm::vec4 colorEdgePrevious = pbinoc->pte->m_rgba;
         const float edgeScaleXPrevious = pbinoc->pte->m_rxScaling;
@@ -2547,8 +2560,8 @@ void DrawBinoc(BINOC* pbinoc)
             pauseYVirtual = offsetY + 472.80002f;
         }
 
-        const float pauseX = UiX(pauseXVirtual);
-        const float pauseY = UiY(pauseYVirtual);
+        const float pauseX = bottomDialogue?294.0f:UiX(pauseXVirtual);
+        const float pauseY = bottomDialogue?126.0f:UiY(pauseYVirtual);
 
         char achzPause[2] = { pbinoc->chPause, '\0' };
         CFontBrx* pfontJoy = PfontFromFont(1);
@@ -2571,6 +2584,9 @@ void DrawBinoc(BINOC* pbinoc)
             pfontJoy->PopScaling();
         }
     }
+#ifdef __3DS__
+    CaneDialogueHudNative(false);
+#endif
 }
 void FreeBinocGL(BINOC* pbinoc)
 {

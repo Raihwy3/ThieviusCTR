@@ -11,10 +11,13 @@ DK=Path(os.environ.get('DEVKITPRO','/opt/devkitpro'))
 DSP=ROOT/'platform/3ds/vendor/OpenDSP/library'
 subprocess.run(['make','-C',str(DSP),'-j4'],env={**os.environ,'DEVKITPRO':str(DK)},check=True)
 CC=DK/'devkitARM/bin/arm-none-eabi-g++'
-refresh=subprocess.run([sys.executable,str(ROOT/'platform/3ds/build_core.py'),'--all'],stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
-(CORE/'backend-build.log').write_text(refresh.stdout)
-if refresh.returncode:
- print(refresh.stdout[-6000:]);raise SystemExit(refresh.returncode)
+if '--skip-core-refresh' not in sys.argv:
+ refresh=subprocess.run([sys.executable,str(ROOT/'platform/3ds/build_core.py'),'--all'],stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
+ (CORE/'backend-build.log').write_text(refresh.stdout)
+ if refresh.returncode:
+  print(refresh.stdout[-6000:]);raise SystemExit(refresh.returncode)
+elif not (CORE/'libcane-gameplay.a').exists() or not (CORE/'build-config.json').exists():
+ raise SystemExit('--skip-core-refresh requested, but no cached gameplay archive/config is available')
 
 BRX_OUT.mkdir(parents=True,exist_ok=True)
 brx_flags=[
@@ -64,12 +67,23 @@ if compiled.returncode:
  print(compiled.stdout[-6000:]);raise SystemExit(compiled.returncode)
 # Build the shader independently, including on a clean checkout.
 subprocess.run([str(DK/'tools/bin/picasso'),'-o',str(OUT/'basic.shbin'),str(ROOT/'platform/3ds/runtime.v.pica')],check=True)
+subprocess.run([str(DK/'tools/bin/picasso'),'-o',str(OUT/'movie.shbin'),str(ROOT/'platform/3ds/runtime_movie.v.pica')],check=True)
 (OUT/'runtime-shader.s').write_text('.section .rodata.cane_shader,"a",%progbits\n.balign 4\n.global cane_shader\n.global cane_shader_end\ncane_shader:\n.incbin "basic.shbin"\ncane_shader_end:\n')
+with (OUT/'runtime-shader.s').open('a') as asm:
+ asm.write('.balign 4\n.global cane_movie_shader\n.global cane_movie_shader_end\ncane_movie_shader:\n.incbin "movie.shbin"\ncane_movie_shader_end:\n')
 subprocess.run([str(CC),'-march=armv6k','-mtune=mpcore','-mfloat-abi=hard','-mtp=soft','-c','runtime-shader.s','-o','runtime-shader.o'],cwd=OUT,check=True)
+fsr_src=ROOT/'platform/3ds/vendor/PICASR/fsr3ds.c'
+fsr_hdr=ROOT/'platform/3ds/vendor/PICASR/fsr3ds.inc'
+fsr_obj=CORE/'fsr3ds.o'
+if not fsr_obj.exists() or fsr_obj.stat().st_mtime<max(fsr_src.stat().st_mtime,fsr_hdr.stat().st_mtime):
+ res=subprocess.run([str(CC),'-x','c','-std=gnu11','-O3','-march=armv6k','-mtune=mpcore','-mfloat-abi=hard','-mtp=soft','-ffunction-sections','-fdata-sections','-I'+str(DK/'libctru/include'),'-I'+str(ROOT/'platform/3ds/vendor/PICASR'),'-c',str(fsr_src),'-o',str(fsr_obj)],stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
+ (CORE/'picasr-compile.log').write_text(res.stdout)
+ if res.returncode:
+  print(res.stdout[-6000:]);raise SystemExit(res.returncode)
 subprocess.run([str(CC),*flags,'-I'+str(DK/'libctru/include'),'-c',str(ROOT/'platform/3ds/scene_3ds.cpp'),'-o',str(CORE/'scene_native.o')],check=True)
 updater_objs=updater_deps.objects()
 updater_libs=updater_deps.libraries()
-command=[str(CC),'-march=armv6k','-mtune=mpcore','-mfloat-abi=hard','-mtp=soft','-specs=3dsx.specs','-Wl,--wrap=abort,--wrap=exit,--wrap=_exit,--gc-sections,-Map,'+str(OUT/'ThieviusCTR.map'),str(CORE/'runtime_probe.o'),*[str(p) for p in updater_objs],str(fmv_obj),str(launcher_obj),*[str(p) for p in brx_objs],str(CORE/'scene_native.o'),str(OUT/'runtime-shader.o'),str(CORE/'libcane-gameplay.a'),str(ffmpeg_dir/'lib/libavformat.a'),str(ffmpeg_dir/'lib/libavcodec.a'),str(ffmpeg_dir/'lib/libavutil.a'),*updater_libs,'-L'+str(DK/'libctru/lib'),'-lcitro3d',str(DSP/'lib/libopendsp.a'),'-lctru','-lm','-o',str(OUT/'ThieviusCTR.elf')]
+command=[str(CC),'-march=armv6k','-mtune=mpcore','-mfloat-abi=hard','-mtp=soft','-specs=3dsx.specs','-Wl,--wrap=abort,--wrap=exit,--wrap=_exit,--gc-sections,-Map,'+str(OUT/'ThieviusCTR.map'),str(CORE/'runtime_probe.o'),*[str(p) for p in updater_objs],str(fsr_obj),str(fmv_obj),str(launcher_obj),*[str(p) for p in brx_objs],str(CORE/'scene_native.o'),str(OUT/'runtime-shader.o'),str(CORE/'libcane-gameplay.a'),str(ffmpeg_dir/'lib/libavformat.a'),str(ffmpeg_dir/'lib/libavcodec.a'),str(ffmpeg_dir/'lib/libavutil.a'),*updater_libs,'-L'+str(DK/'libctru/lib'),'-lcitro3d',str(DSP/'lib/libopendsp.a'),'-lctru','-lm','-o',str(OUT/'ThieviusCTR.elf')]
 result=subprocess.run(command,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
 (CORE/'runtime-link.log').write_text(result.stdout)
 if result.returncode:

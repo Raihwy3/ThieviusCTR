@@ -9,6 +9,7 @@
 #include "pnt.h"
 #include "xform.h"
 #ifdef __3DS__
+extern void CaneConsumeGyro3ds(float*,float*);
 extern bool CaneBinocInvertX3ds();
 extern bool CaneBinocInvertY3ds();
 #endif
@@ -465,6 +466,12 @@ void UpdateCplook(CPLOOK* pcplook, CPDEFI* pcpdefi, JOY* pjoy, float dt)
 			pcplook->radPan  = RadNormalize(pcplook->radPan + pcplook->swPan * dt);
 			pcplook->radTilt = glm::clamp(pcplook->radTilt + pcplook->swTilt * dt, -1.0f, 1.0f);
 		}
+
+#ifdef __3DS__
+        float gyroPan=0,gyroTilt=0;CaneConsumeGyro3ds(&gyroPan,&gyroTilt);
+        pcplook->radPan=RadNormalize(pcplook->radPan+gyroPan);
+        pcplook->radTilt=glm::clamp(pcplook->radTilt+gyroTilt,-1.0f,1.0f);
+#endif
 
 		PosCplookEye(pcplook, &posEye);
 
