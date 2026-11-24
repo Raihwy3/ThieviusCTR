@@ -2,7 +2,7 @@
 """Run the built platform probe with local extracted worlds on an isolated SD."""
 from pathlib import Path
 import argparse,os,shutil,subprocess,sys,time
-parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--missing-scene',action='store_true');parser.add_argument('--runtime',action='store_true');parser.add_argument('--menu',action='store_true');parser.add_argument('--effects',action='store_true');parser.add_argument('--buttons',action='store_true');parser.add_argument('--features',action='store_true');parser.add_argument('--stereo-bottom',action='store_true');parser.add_argument('--skip-intro',action='store_true');parser.add_argument('--wait',type=float,default=15);parser.add_argument('--saves',action='store_true');parser.add_argument('--resume-save',action='store_true');args=parser.parse_args()
+parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--missing-scene',action='store_true');parser.add_argument('--runtime',action='store_true');parser.add_argument('--menu',action='store_true');parser.add_argument('--effects',action='store_true');parser.add_argument('--buttons',action='store_true');parser.add_argument('--features',action='store_true');parser.add_argument('--stereo-bottom',action='store_true');parser.add_argument('--skip-intro',action='store_true');parser.add_argument('--wait',type=float,default=15);parser.add_argument('--saves',action='store_true');parser.add_argument('--resume-save',action='store_true');parser.add_argument('--cia',action='store_true');args=parser.parse_args()
 if not 1 <= args.wait <= 55: parser.error('--wait must be between 1 and 55 seconds')
 ROOT=Path(__file__).resolve().parents[2];out=ROOT/('build/3ds/emulator-runtime' if args.runtime else 'build/3ds/emulator-missing' if args.missing_scene else 'build/3ds/emulator');out.mkdir(parents=True,exist_ok=True)
 if os.environ.get('THIEVIUS_PROBE_DIR'):
@@ -72,6 +72,12 @@ if args.features:
         content=re.sub(r'^factor_3d=.*$', 'factor_3d=100',content,flags=re.M)
         content=content.replace('factor_3d\\default=true','factor_3d\\default=false')
         qt.write_text(content)
+runtime_path=ROOT/'build/3ds/ThieviusCTR.3dsx'
+if args.cia:
+    if not args.runtime:parser.error('--cia needs --runtime')
+    installed=list((out/'data').glob('**/title/00040000/0e054c00/content/*.app'))
+    if len(installed)!=1:raise RuntimeError('Install the CIA into this isolated profile before testing: '+str(out))
+    runtime_path=installed[0]
 env={**os.environ,'DISPLAY':':95','XDG_CONFIG_HOME':str(out/'config'),'XDG_DATA_HOME':str(out/'data'),'QT_X11_NO_MITSHM':'1','LIBGL_ALWAYS_SOFTWARE':'1'}
 with (out/'xvfb.log').open('w') as xlog,(out/'azahar.log').open('w') as log:
     x=subprocess.Popen(['Xvfb',':95','-screen','0','1000x900x24'],stdout=xlog,stderr=xlog)
@@ -79,7 +85,7 @@ with (out/'xvfb.log').open('w') as xlog,(out/'azahar.log').open('w') as log:
     try:
         time.sleep(2)
         if x.poll() is not None:raise RuntimeError('Display :95 is unavailable')
-        emulator=subprocess.Popen(['azahar','-w',str(ROOT/('build/3ds/ThieviusCTR.3dsx' if args.runtime else 'build/3ds/ThieviusCTR-viewer.3dsx'))],env=env,stdout=log,stderr=log)
+        emulator=subprocess.Popen(['azahar','-w',str(runtime_path if args.runtime else ROOT/'build/3ds/ThieviusCTR-viewer.3dsx')],env=env,stdout=log,stderr=log)
         if args.runtime:
             runtime_log=out/'data/azaharplus-emu/sdmc/3ds/ThieviusCTR/runtime.log'
             intro_captured=False

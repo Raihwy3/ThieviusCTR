@@ -47,6 +47,7 @@ void CaneCelNative(const RPLCEL& packet) {
 }
 enum class CaneHudLayer {Top,Coins,Health,Dialogue};
 static bool caneLoading=false;
+static bool caneStartupPresentation=true;
 static const char* caneLoadingText="Loading...";
 static CaneHudLayer caneHudLayer=CaneHudLayer::Top;
 static TV* canePortraitContext=nullptr;
@@ -1537,6 +1538,8 @@ public:
             const bool persistent=caneBottomActive && !caneLoading &&
                 ((kind==BLOTK_Coin && CaneBottomCoins3ds()) ||
                  (kind==(CaneBottomBottles3ds()?BLOTK_Clue:BLOTK_Lives) && CaneBottomHealth3ds())) &&
+                // The same Paris world becomes playable after the title sequence.
+                !caneStartupPresentation &&
                 (g_ui.uisPlaying!=UIS_Attract && g_ui.uis!=UIS_Splash);
             if(persistent && blot && blot->pfont && blot->pvtblot && blot->pvtblot->pfnDrawBlot) {
                 const float savedX=blot->x,savedY=blot->y,savedOn=blot->uOn;
@@ -2134,7 +2137,7 @@ public:
                 if(h.layer==CaneHudLayer::Health)health+=h.count;
                 if(h.layer==CaneHudLayer::Dialogue) {dialogue+=h.count;if(h.tv)++portraits;}
             }
-            std::fprintf(stderr,"Bottom HUD: active=%d coins=%u health=%u dialogue=%u portraits=%u\n",int(caneBottomActive),coins,health,dialogue,portraits);
+            std::fprintf(stderr,"Bottom HUD: active=%d coins=%u health=%u dialogue=%u portraits=%u startup=%d\n",int(caneBottomActive),coins,health,dialogue,portraits,int(caneStartupPresentation));
         }
         unsigned wmOverlayFirst=0;
         if(!phaseBuckets[RP_WorldMap].empty()) {

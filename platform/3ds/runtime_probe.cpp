@@ -105,8 +105,11 @@ int main() {
             levelRefs[i].levelId=uint32_t(g_levelTable[i].levelID);
             levelRefs[i].name=g_levelTable[i].levelName.c_str();
         }
-        if(!sd || !CaneUpdateStartup3ds("sdmc:/3ds/ThieviusCTR", &topConsole, &bottomConsole, logFile) ||
-           !CaneLauncherEnsureAssets3ds("sdmc:/3ds/ThieviusCTR", levelRefs, 46, &topConsole, &bottomConsole, logFile)) {
+        bool launcherReady=sd;
+#ifndef CANE_CIA
+        if(launcherReady)launcherReady=CaneUpdateStartup3ds("sdmc:/3ds/ThieviusCTR", &topConsole, &bottomConsole, logFile);
+#endif
+        if(!launcherReady || !CaneLauncherEnsureAssets3ds("sdmc:/3ds/ThieviusCTR", levelRefs, 46, &topConsole, &bottomConsole, logFile)) {
             stage("Launcher exited");
             normalShutdown=true;
             if(logFile) {fclose(logFile);logFile=nullptr;}
@@ -142,7 +145,7 @@ int main() {
         graphics.attachBottomConsole(&bottomConsole);
         perfMonitor.setTargetFps(CaneRenderCap3ds());
         u64 lastPresentedTick=0;
-        bool startupTitleReached=false;
+        bool startupTitleReached=false;caneStartupPresentation=true;
         bool skipStartupAnimation=CaneSkipIntro3ds();
         bool skippingTitle=false;float titleMasterVolume=1;
         monitorActive=true;
@@ -284,7 +287,7 @@ int main() {
                 if(g_ui.uis==UIS_Attract) {
                     if(!announcedAttract) {
                         announcedAttract=true;
-                        if(!startupTitleReached) {startupTitleReached=true;CaneMarkIntroSeen3ds();}
+                        if(!startupTitleReached) {startupTitleReached=true;caneStartupPresentation=false;CaneMarkIntroSeen3ds();}
                         stage("Original title menu: START plays; SELECT opens menu");
                         stage("Original gameplay with native graphics / DSP audio");
                         stage(CaneSwapBA3ds()

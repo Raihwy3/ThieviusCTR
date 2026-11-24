@@ -99,6 +99,17 @@ Upstream desktop dependencies (Libraries/):
   - GLAD / Khronos headers (Libraries/include/glad/, Libraries/include/KHR/)
   - Windows FFmpeg shared build (LGPL v3, Libraries/ffmpeg/ffmpeg-master-latest-win64-lgpl-shared/LICENSE.txt; desktop Windows builds only)
 
+Installed HOME Menu package:
+  Raihwy3 - supplied icon artwork.
+  Original synthesized jingle - platform/3ds/cia/make_jingle.py; no game samples.
+  3DSGuy / applestash / Jakcron - makerom and the Homebrew boot logo (MIT).
+  Steveice10 / carstene1ns - bannertool packaging tool.
+  Floogle - pycgfx (MIT), glTF-to-CGFX conversion for the animated 3D title.
+  Gold lettering uses the system URW Base35 Z003 face; white CTR uses DejaVu
+  Sans Bold. The banner contains generated outlines, not bundled font files.
+  Conker3DSRecomp / Eyes of Gold - CIA configuration and package-validation
+  workflow references. No game assets from either project are included.
+
 Legal notice:
   ThieviusCTR is an unofficial fan project and is not affiliated with or endorsed
   by Sony Interactive Entertainment, Sucker Punch Productions, or Nintendo.

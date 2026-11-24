@@ -61,7 +61,11 @@ if not fmv_obj.exists() or fmv_obj.stat().st_mtime<max(fmv_src.stat().st_mtime,f
 
 config=json.loads((CORE/'build-config.json').read_text())
 flags=config['flags']
-compiled=subprocess.run([str(CC),*flags,'-O3','-fno-math-errno','-fno-trapping-math','-I'+str(DK/'libctru/include'),'-include',str(CORE/'core_pch.h'),'-c',str(ROOT/'platform/3ds/runtime_probe.cpp'),'-o',str(CORE/'runtime_probe.o')],stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
+cia='--cia' in sys.argv
+runtime_obj=CORE/('runtime_cia.o' if cia else 'runtime_probe.o')
+elf=OUT/('ThieviusCTR-cia.elf' if cia else 'ThieviusCTR.elf')
+if cia:flags=[*flags,'-DCANE_CIA']
+compiled=subprocess.run([str(CC),*flags,'-O3','-fno-math-errno','-fno-trapping-math','-I'+str(DK/'libctru/include'),'-include',str(CORE/'core_pch.h'),'-c',str(ROOT/'platform/3ds/runtime_probe.cpp'),'-o',str(runtime_obj)],stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
 (CORE/'runtime-compile.log').write_text(compiled.stdout)
 if compiled.returncode:
  print(compiled.stdout[-6000:]);raise SystemExit(compiled.returncode)
@@ -83,11 +87,12 @@ if not fsr_obj.exists() or fsr_obj.stat().st_mtime<max(fsr_src.stat().st_mtime,f
 subprocess.run([str(CC),*flags,'-I'+str(DK/'libctru/include'),'-c',str(ROOT/'platform/3ds/scene_3ds.cpp'),'-o',str(CORE/'scene_native.o')],check=True)
 updater_objs=updater_deps.objects()
 updater_libs=updater_deps.libraries()
-command=[str(CC),'-march=armv6k','-mtune=mpcore','-mfloat-abi=hard','-mtp=soft','-specs=3dsx.specs','-Wl,--wrap=abort,--wrap=exit,--wrap=_exit,--gc-sections,-Map,'+str(OUT/'ThieviusCTR.map'),str(CORE/'runtime_probe.o'),*[str(p) for p in updater_objs],str(fsr_obj),str(fmv_obj),str(launcher_obj),*[str(p) for p in brx_objs],str(CORE/'scene_native.o'),str(OUT/'runtime-shader.o'),str(CORE/'libcane-gameplay.a'),str(ffmpeg_dir/'lib/libavformat.a'),str(ffmpeg_dir/'lib/libavcodec.a'),str(ffmpeg_dir/'lib/libavutil.a'),*updater_libs,'-L'+str(DK/'libctru/lib'),'-lcitro3d',str(DSP/'lib/libopendsp.a'),'-lctru','-lm','-o',str(OUT/'ThieviusCTR.elf')]
+command=[str(CC),'-march=armv6k','-mtune=mpcore','-mfloat-abi=hard','-mtp=soft','-specs=3dsx.specs','-Wl,--wrap=abort,--wrap=exit,--wrap=_exit,--gc-sections,-Map,'+str(elf.with_suffix('.map')),str(runtime_obj),*[str(p) for p in updater_objs],str(fsr_obj),str(fmv_obj),str(launcher_obj),*[str(p) for p in brx_objs],str(CORE/'scene_native.o'),str(OUT/'runtime-shader.o'),str(CORE/'libcane-gameplay.a'),str(ffmpeg_dir/'lib/libavformat.a'),str(ffmpeg_dir/'lib/libavcodec.a'),str(ffmpeg_dir/'lib/libavutil.a'),*updater_libs,'-L'+str(DK/'libctru/lib'),'-lcitro3d',str(DSP/'lib/libopendsp.a'),'-lctru','-lm','-o',str(elf)]
 result=subprocess.run(command,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
 (CORE/'runtime-link.log').write_text(result.stdout)
 if result.returncode:
  print(result.stdout[-12000:]);raise SystemExit(result.returncode)
-subprocess.run([str(DK/'tools/bin/3dsxtool'),str(OUT/'ThieviusCTR.elf'),str(OUT/'ThieviusCTR.3dsx')],check=True)
+if not cia:
+ subprocess.run([str(DK/'tools/bin/3dsxtool'),str(elf),str(OUT/'ThieviusCTR.3dsx')],check=True)
 subprocess.run([str(DK/'tools/bin/smdhtool'),'--create','ThieviusCTR','Sly Cooper 3DS launcher & port','Raihwy3 / ProjectCane',str(ROOT/'platform/3ds/icon.png'),str(OUT/'ThieviusCTR.smdh')],check=True)
-print('Built native runtime & launcher:',OUT/'ThieviusCTR.3dsx')
+print('Built CIA ELF:' if cia else 'Built native runtime & launcher:',elf if cia else OUT/'ThieviusCTR.3dsx')

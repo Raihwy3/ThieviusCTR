@@ -27,6 +27,16 @@
 - Your own legally backed-up **US retail PlayStation 2 ISO** of *Sly Cooper and the Thievius Raccoonus* (`SCUS_971.98` — PAL/JP discs are not supported)
 - Free SD card space: ~3 GiB during first-time on-console extraction (~1.5–2 GiB once the ISO is deleted afterward)
 
+### Installed HOME Menu version (CIA)
+
+Install the CIA from the separate `cia-ThieviusCTR-*.zip` release asset using
+FBI or another homebrew title installer. It uses the same
+`sd:/3ds/ThieviusCTR/` folder, extracted files, settings and saves as the 3DSX.
+For a fresh installation, put your ISO in that folder as described below.
+
+Install newer CIAs manually; the built-in updater only updates the 3DSX.
+The CIA banner animation still has known playback issues.
+
 ### Option A — On-Console Extraction (No PC Conversion Required)
 
 1. Download the asset-free release ZIP from [GitHub Releases](https://github.com/Raihwy3/ThieviusCTR/releases) (or build from source), and copy its `3ds/` folder to the root of your SD card so `ThieviusCTR.3dsx` is at:
@@ -214,6 +224,19 @@ What these scripts do:
 
 - `build_runtime.py` compiles vendored **OpenDSP**, builds the ARM gameplay core (`libcane-gameplay.a`), BRX rebuilder, on-console launcher, startup updater ([`platform/3ds/updater_deps.py`](platform/3ds/updater_deps.py)), shader (`runtime.v.pica`), invokes `platform/3ds/build_ffmpeg_3ds.py` (which downloads FFmpeg `7.1.1`, applies the `libavformat/bink.c` patch, and cross-compiles minimal LGPL static libs), and links `build/3ds/ThieviusCTR.3dsx` + `ThieviusCTR.smdh`.
 - `package_runtime.py` creates the clean, redistributable, asset-free archive at `dist/ThieviusCTR-test.zip` containing `ThieviusCTR.3dsx`, `ThieviusCTR.smdh`, `README-runtime.txt`, `CREDITS.txt`, `LICENSE-OpenDSP.txt`, `LICENSE-FFmpeg-LGPL2.1.txt`, and `LICENSE-Mozilla-MPL-2.0.txt`. *(Do not distribute `local/` or archives built with `--zip-assets` — those contain your personal extracted game data.)*
+
+### Building the CIA
+
+After building the normal runtime, run:
+
+```bash
+python3 platform/3ds/build_cia.py --makerom /path/to/makerom --bannertool /path/to/bannertool
+```
+
+This builds a separate CIA executable and packages the custom icon, banner
+and jingle. See [`platform/3ds/cia/README.txt`](platform/3ds/cia/README.txt) for
+tool requirements and the makerom version-encoding fix. It does not bundle game
+files or proprietary Nintendo DSP firmware.
 
 ### Upstream Desktop Builds (Windows / Linux)
 
