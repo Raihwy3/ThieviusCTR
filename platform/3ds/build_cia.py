@@ -41,7 +41,7 @@ def validate(cia,elf,smdh,banner):
         for s in loads:
             offset=s['p_vaddr']-base;assert entries['.code'][offset:offset+s['p_filesz']]==s.data()
     assert b'sdmc:/3ds/ThieviusCTR' in entries['.code']
-    assert b'Updater: checking latest GitHub release' not in entries['.code'], 'CIA must not offer 3DSX updates'
+    assert b'CIA UPDATE READY' in entries['.code'], 'CIA update download flow is missing'
     return {'title_id':f'{TITLE_ID:016X}','sha256':hashlib.sha256(raw).hexdigest(),'bytes':len(raw),'payload_matches_elf':True,'romfs_bundled':False,'console_tested':False}
 
 def main():

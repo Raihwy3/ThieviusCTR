@@ -8,9 +8,11 @@ No ISO or extracted game files are included. Fresh installations require your
 own supported US retail Sly Cooper ISO, named Slygame.iso, in that folder.
 The first launch prepares game files on the console.
 
-Install newer CIAs manually. The 3DSX updater is disabled in this build because
-updating a 3DSX cannot update an installed application. Both builds share saves
-and settings, so either launcher can use the same progress.
+With Wi-Fi connected, startup can check for newer releases and download a
+verified raw CIA to /3ds/ThieviusCTR/launcher-update.cia. Close the game and
+install that file with FBI. This does not install over a running title.
+Both builds share saves and settings, so either launcher uses the same progress.
+An empty no-update-check.flag in the game folder disables update checks.
 
 The CIA has been installed and launched on a console. The animated HOME Menu
 banner still has known playback issues. Build/package validation does not

@@ -21,3 +21,5 @@ The 3DS build links devkitPro portlibs `3ds-curl`, `3ds-mbedtls`, and `3ds-zlib`
 [`platform/3ds/check_updater.py`](../platform/3ds/check_updater.py) compiles and runs the updater parser, `libcurl` TLS transport, SHA-256 verification, transactional replacement, and `"TCTU"` recovery suite on the host with `-fsanitize=address,undefined` against a local ephemeral HTTPS server (requires host `gcc`, `libcurl`, `minizip`, `zlib`, OpenSSL dev headers, and the `openssl` CLI).
 
 The separate `cia-ThieviusCTR-*.zip` asset is for manual installation. Its prefix deliberately excludes it from the 3DSX updater.
+
+The installed CIA also checks at startup. It selects the raw `ThieviusCTR-*.cia` release asset, verifies HTTPS, file size and the GitHub SHA-256 digest, then checks its CIA/NCCH structure and title ID. The download is saved as `/3ds/ThieviusCTR/launcher-update.cia`. Exit and install that file with FBI; the running title is not replaced automatically. Publish the raw CIA alongside the ZIPs. The same skip button, offline behaviour and `no-update-check.flag` apply.

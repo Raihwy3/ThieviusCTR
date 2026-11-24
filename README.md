@@ -34,7 +34,9 @@ FBI or another homebrew title installer. It uses the same
 `sd:/3ds/ThieviusCTR/` folder, extracted files, settings and saves as the 3DSX.
 For a fresh installation, put your ISO in that folder as described below.
 
-Install newer CIAs manually; the built-in updater only updates the 3DSX.
+The CIA checks for newer releases and can download a verified update to
+`sd:/3ds/ThieviusCTR/launcher-update.cia`. Close the game and install that file
+with FBI. Existing installations without this feature need one manual update.
 The CIA banner animation still has known playback issues.
 
 ### Option A — On-Console Extraction (No PC Conversion Required)

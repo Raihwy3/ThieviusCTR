@@ -61,14 +61,19 @@ int main(int argc, char **argv) {
     if (argc == 4 && strcmp(argv[1], "compare") == 0) {
         return cane_update_newer(argv[2], argv[3]) ? 0 : 1;
     }
-    if (argc == 4 && strcmp(argv[1], "release") == 0) {
+    if (argc == 4 && (strcmp(argv[1], "release") == 0 || strcmp(argv[1], "release-cia") == 0)) {
         size_t n = 0;
         char *json = read_entire_file(argv[2], &n);
         if (!json) return 2;
         struct CaneUpdateRelease r = { 0 };
-        int ok = cane_update_release(json, n, argv[3], &r);
+        int ok = cane_update_release_for(json, n, argv[3], strcmp(argv[1], "release-cia") == 0, &r);
         free(json);
         if (ok) printf("%s\n%s\n%s\n%zu\n", r.tag, r.url, r.digest, r.bytes);
+        return ok ? 0 : 1;
+    }
+    if (argc == 3 && strcmp(argv[1], "cia") == 0) {
+        int ok = cane_update_validate_cia(argv[2], error, sizeof error);
+        if (!ok) fprintf(stderr, "%s\n", error);
         return ok ? 0 : 1;
     }
     if (argc >= 4 && strcmp(argv[1], "install") == 0) {

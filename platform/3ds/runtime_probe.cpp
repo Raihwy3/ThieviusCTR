@@ -106,9 +106,12 @@ int main() {
             levelRefs[i].name=g_levelTable[i].levelName.c_str();
         }
         bool launcherReady=sd;
-#ifndef CANE_CIA
-        if(launcherReady)launcherReady=CaneUpdateStartup3ds("sdmc:/3ds/ThieviusCTR", &topConsole, &bottomConsole, logFile);
+#ifdef CANE_CIA
+        constexpr bool installedTitle=true;
+#else
+        constexpr bool installedTitle=false;
 #endif
+        if(launcherReady)launcherReady=CaneUpdateStartup3ds("sdmc:/3ds/ThieviusCTR", &topConsole, &bottomConsole, logFile, installedTitle);
         if(!launcherReady || !CaneLauncherEnsureAssets3ds("sdmc:/3ds/ThieviusCTR", levelRefs, 46, &topConsole, &bottomConsole, logFile)) {
             stage("Launcher exited");
             normalShutdown=true;

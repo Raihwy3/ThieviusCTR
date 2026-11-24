@@ -92,6 +92,33 @@ def main() -> None:
         assert out_lines[0] == 'v0.2.0'
         assert out_lines[1].endswith('ThieviusCTR-v0.2.0.zip')
 
+        mixed = copy.deepcopy(release)
+        cia_asset = {'name': 'ThieviusCTR-v0.2.0.cia', 'size': 1024,
+                     'digest': 'sha256:' + 'b' * 64,
+                     'browser_download_url': 'https://github.com/Raihwy3/ThieviusCTR/releases/download/v0.2.0/ThieviusCTR-v0.2.0.cia'}
+        mixed['assets'].insert(0, cia_asset)
+        fixture.write_text(json.dumps(mixed))
+        assert run('release-cia', fixture, 'v0.1.9-r1').splitlines()[1].endswith('.cia')
+        assert run('release', fixture, 'v0.1.9-r1').splitlines()[1].endswith('.zip')
+        fixture.write_text(json.dumps(release))
+        run('release-cia', fixture, 'v0.1.9-r1', ok=False)
+        for key, value in [('digest', 'sha256:bad'), ('size', 25 * 1024 * 1024),
+                           ('browser_download_url', 'https://github.com/other/repo/update.cia')]:
+            bad = copy.deepcopy(mixed); bad['assets'][0][key] = value
+            fixture.write_text(json.dumps(bad)); run('release-cia', fixture, 'v0.1.9', ok=False)
+        def cia_file(title):
+            header = bytearray(0x2020)
+            struct.pack_into('<IHHIIIIQ', header, 0, 0x2020, 0, 0, 64, 64, 64, 0, 512)
+            ncch = bytearray(512); ncch[0x100:0x104] = b'NCCH'
+            struct.pack_into('<Q', ncch, 0x118, title)
+            return bytes(header) + bytes(224) + ncch
+        good_cia = tmp / 'good.cia'; good_cia.write_bytes(cia_file(0x000400000E054C00))
+        run('cia', good_cia)
+        bad_cia = tmp / 'wrong-title.cia'; bad_cia.write_bytes(cia_file(0x000400000E064D00))
+        run('cia', bad_cia, ok=False)
+        for name, payload in [('truncated', good_cia.read_bytes()[:-1]), ('junk', b'x' * 1024)]:
+            bad_cia.write_bytes(payload); run('cia', bad_cia, ok=False)
+
         for key in ('draft', 'prerelease'):
             bad = copy.deepcopy(release)
             bad[key] = True

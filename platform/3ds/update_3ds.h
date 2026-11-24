@@ -8,4 +8,5 @@
 bool CaneUpdateStartup3ds(const char* directory,
                           PrintConsole* top,
                           PrintConsole* bottom,
-                          std::FILE* logFile);
+                          std::FILE* logFile,
+                          bool installedTitle = false);

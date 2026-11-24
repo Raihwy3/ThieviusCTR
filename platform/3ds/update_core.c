@@ -119,7 +119,7 @@ static int json_number(struct Json *j, int i, size_t *out) {
     return 1;
 }
 
-int cane_update_release(const char *json, size_t length, const char *installed, struct CaneUpdateRelease *out) {
+int cane_update_release_for(const char *json, size_t length, const char *installed, int cia, struct CaneUpdateRelease *out) {
     if (!json || !installed || !out || length > 65536u) return 0;
     jsmntok_t *tokens = calloc(4096u, sizeof *tokens);
     if (!tokens) return 0;
@@ -151,7 +151,7 @@ int cane_update_release(const char *json, size_t length, const char *installed, 
         char name[160], hash[80];
         if (!json_string(&j, json_field(&j, i, "name"), name, sizeof name)) continue;
         size_t size = strlen(name);
-        if (size < 16u || strcmp(name + size - 4, ".zip") != 0 ||
+        if (size < 16u || strcmp(name + size - 4, cia ? ".cia" : ".zip") != 0 ||
             strncmp(name, "ThieviusCTR", 11) != 0 || strstr(name, "source") != NULL) {
             continue;
         }
@@ -184,6 +184,10 @@ int cane_update_release(const char *json, size_t length, const char *installed, 
 end:
     free(tokens);
     return ok;
+}
+
+int cane_update_release(const char *json, size_t length, const char *installed, struct CaneUpdateRelease *out) {
+    return cane_update_release_for(json, length, installed, 0, out);
 }
 
 static int fail_msg(char *out, size_t capacity, const char *text) {
@@ -407,4 +411,25 @@ int cane_update_install(const char *archive, const char *directory,
         remove(p);
     }
     return 1;
+}
+
+/* CIA download validation adapted from Eyes of Gold. Installation is left to FBI. */
+static uint32_t cia_u32(const unsigned char *p){return (uint32_t)p[0]|(uint32_t)p[1]<<8|(uint32_t)p[2]<<16|(uint32_t)p[3]<<24;}
+static uint64_t cia_u64(const unsigned char *p){return cia_u32(p)|(uint64_t)cia_u32(p+4)<<32;}
+int cane_update_validate_cia(const char *file,char *error,size_t capacity) {
+    FILE *f=fopen(file,"rb");if(!f)return fail_msg(error,capacity,"Cannot read the downloaded CIA.");
+    unsigned char h[32],ncch[0x200];int valid=0;
+    if(fseek(f,0,SEEK_END))goto end;
+    long length=ftell(f);rewind(f);
+    if(length<0 || (unsigned long)length>CANE_UPDATE_MAX_ZIP || fread(h,1,sizeof h,f)!=sizeof h)goto end;
+    uint32_t header=cia_u32(h),cert=cia_u32(h+8),ticket=cia_u32(h+12),tmd=cia_u32(h+16);
+    if(header!=0x2020 || h[4] || h[5] || h[6] || h[7] || !cert || !ticket || !tmd)goto end;
+    uint64_t at=((uint64_t)header+63)&~UINT64_C(63);
+    at+=((uint64_t)cert+63)&~UINT64_C(63);at+=((uint64_t)ticket+63)&~UINT64_C(63);at+=((uint64_t)tmd+63)&~UINT64_C(63);
+    uint64_t content=cia_u64(h+24);
+    if(at>(uint64_t)length || content<sizeof ncch || content>(uint64_t)length-at)goto end;
+    if(fseek(f,(long)at,SEEK_SET) || fread(ncch,1,sizeof ncch,f)!=sizeof ncch)goto end;
+    valid=!memcmp(ncch+0x100,"NCCH",4) && cia_u64(ncch+0x118)==CANE_CIA_TITLE_ID;
+end:fclose(f);
+    return valid?1:fail_msg(error,capacity,"Downloaded CIA is invalid or belongs to another title.");
 }

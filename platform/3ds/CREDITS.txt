@@ -108,7 +108,8 @@ Installed HOME Menu package:
   Gold lettering uses the system URW Base35 Z003 face; white CTR uses DejaVu
   Sans Bold. The banner contains generated outlines, not bundled font files.
   Conker3DSRecomp / Eyes of Gold - CIA configuration and package-validation
-  workflow references. No game assets from either project are included.
+  workflow references. CIA update downloads and title-ID validation are adapted
+  from Eyes of Gold. No game assets from either project are included.
 
 Legal notice:
   ThieviusCTR is an unofficial fan project and is not affiliated with or endorsed

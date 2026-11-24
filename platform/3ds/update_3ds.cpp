@@ -17,6 +17,7 @@ PrintConsole* sTopConsole = nullptr;
 PrintConsole* sBottomConsole = nullptr;
 
 struct UpdateJob {
+    int cia = 0;
     int download = 0;
     int cancel = 0;
     int done = 0;
@@ -82,7 +83,7 @@ void updateWorker(void*) {
     sJob.ok = cane_update_http(url, &t, cane_update_ca, sizeof(cane_update_ca) - 1u,
                                sJob.error, sizeof sJob.error);
     if (sJob.ok && !sJob.download) {
-        sJob.ok = cane_update_release(sJob.metadata, t.length, CANE_RELEASE_TAG, &sJob.release);
+        sJob.ok = cane_update_release_for(sJob.metadata, t.length, CANE_RELEASE_TAG, sJob.cia, &sJob.release);
     }
 
     socExit();
@@ -225,11 +226,13 @@ int stageProgress(size_t done, size_t total) {
 bool CaneUpdateStartup3ds(const char* directory,
                           PrintConsole* top,
                           PrintConsole* bottom,
-                          std::FILE* logFile) {
+                          std::FILE* logFile,
+                          bool installedTitle) {
     if (!directory || !*directory) return false;
     sTopConsole = top;
     sBottomConsole = bottom;
     sJob = UpdateJob{};
+    sJob.cia = installedTitle;
 
     char error[160]{};
     if (!cane_update_recover(directory, error, sizeof error)) {
@@ -237,7 +240,7 @@ bool CaneUpdateStartup3ds(const char* directory,
         return promptUser("UPDATE RECOVERY", error, "A: Continue    B: Exit") > 0;
     }
 
-    if (!envIsHomebrew()) {
+    if (!installedTitle && !envIsHomebrew()) {
         logUpdate(logFile, "Updater skipped: not running from Homebrew (.3dsx)");
         return true;
     }
@@ -273,14 +276,15 @@ bool CaneUpdateStartup3ds(const char* directory,
               sJob.release.tag, sJob.release.bytes);
     const int choice = promptUser(
         "NEW RELEASE AVAILABLE",
-        "Install this launcher update?\n\nGame files, saves and settings\nare kept intact.",
-        "A: Install     B: Not now");
+        installedTitle ? "Download the CIA update?\n\nInstall it with FBI after closing\nthe game. Saves and settings stay." :
+                         "Install this launcher update?\n\nGame files, saves and settings\nare kept intact.",
+        installedTitle ? "A: Download    B: Not now" : "A: Install     B: Not now");
     if (choice <= 0) {
         logUpdate(logFile, "Updater: user deferred update %s", sJob.release.tag);
         return choice < 0;
     }
 
-    const int partLen = std::snprintf(sJob.file, sizeof sJob.file, "%s/launcher-update.zip.part", directory);
+    const int partLen = std::snprintf(sJob.file, sizeof sJob.file, "%s/launcher-update.%s.part", directory, installedTitle ? "cia" : "zip");
     if (partLen <= 0 || size_t(partLen) >= sizeof sJob.file) {
         return promptUser("UPDATE NOT INSTALLED", "Update folder path is too long.", "A: Play        B: Exit") > 0;
     }
@@ -292,6 +296,29 @@ bool CaneUpdateStartup3ds(const char* directory,
         return promptUser("UPDATE NOT INSTALLED",
                           "Download failed. The current\nlauncher has not been replaced.",
                           "A: Play        B: Exit") > 0;
+    }
+
+    if (installedTitle) {
+        if (!cane_update_validate_cia(sJob.file, error, sizeof error)) {
+            std::remove(sJob.file);
+            logUpdate(logFile, "CIA updater: validation failed (%s)", error);
+            return promptUser("CIA UPDATE NOT SAVED", error, "A: Play        B: Exit") > 0;
+        }
+        char cia[640]{};
+        const int len = std::snprintf(cia, sizeof cia, "%s/launcher-update.cia", directory);
+        if (len <= 0 || size_t(len) >= sizeof cia) {
+            std::remove(sJob.file);
+            return promptUser("CIA UPDATE NOT SAVED", "Update folder path is too long.", "A: Play        B: Exit") > 0;
+        }
+        std::remove(cia);
+        if (std::rename(sJob.file, cia) != 0) {
+            std::remove(sJob.file);
+            return promptUser("CIA UPDATE NOT SAVED", "Unable to save update on SD card.", "A: Play        B: Exit") > 0;
+        }
+        logUpdate(logFile, "CIA updater: saved verified %s to %s", sJob.release.tag, cia);
+        return promptUser("CIA UPDATE READY",
+                          "Close the game. In FBI, install\n/3ds/ThieviusCTR/\nlauncher-update.cia.\nSaves and settings stay in place.",
+                          "A: Exit        B: Play") < 0;
     }
 
     char archive[640]{};
