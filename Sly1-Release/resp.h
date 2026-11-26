@@ -106,7 +106,11 @@ enum RESPK : int
 	RESPK_LanguageSpanish,
 	RESPK_LanguageItalian,
 
-	RESPK_Max = 84
+	RESPK_Trophies = 84,
+    RESPK_TrophyFirst = 85,
+    RESPK_DebugMenu = 121,
+    RESPK_ResetTrophies = 122,
+    RESPK_Max = 123
 };
 
 // -----------------------------------------------------------------------------
@@ -159,7 +163,11 @@ enum PRK : int
 	PRK_SoundMenu = 37,
 	PRK_LanguageMenu = 38,
 
-	PRK_Max = 39
+	PRK_Trophies = 39,
+    PRK_TrophyDetail = 40,
+    PRK_DebugMenu = 41,
+    PRK_ResetTrophiesConfirm = 42,
+    PRK_Max = 43
 };
 
 // -----------------------------------------------------------------------------
@@ -343,20 +351,21 @@ inline RESPK s_arespkKeyboardMapping[18] =
 // Pause menu
 // -----------------------------------------------------------------------------
 
-inline const RESPK s_arespkPauseMenuAll[9] =
+inline const RESPK s_arespkPauseMenuAll[10] =
 {
     RESPK_ReturnToGame,
     RESPK_RestartRace,
     RESPK_RestartSprint,
     RESPK_RestartLevel,
     RESPK_Map,
+    RESPK_Trophies,
     RESPK_Options,
     RESPK_ExitLevel,
     RESPK_Quit,
     RESPK_ExitToDesktop
 };
 
-inline RESPK s_arespkPauseMenu[9]{};
+inline RESPK s_arespkPauseMenu[10]{};
 
 // -----------------------------------------------------------------------------
 // Options menu
@@ -372,6 +381,9 @@ inline const RESPK s_arespkOptionsMenuAll[] =
     RESPK_Video,
     RESPK_Controls,
 	RESPK_AutoIconify,
+#ifdef __3DS__
+    RESPK_DebugMenu,
+#endif
     RESPK_Back
 };
 
@@ -661,9 +673,10 @@ inline RESPD s_arespd[RESPK_Max] =
 // There must be exactly one entry for every numeric PRK.
 // -----------------------------------------------------------------------------
 
+inline RESPK s_trophyBack[] = {RESPK_Back};
 inline PRD s_mpprkprd[PRK_Max] =
 {
-    { "Paused", 1.0f, 1.0f, 1, 9, s_arespkPauseMenu },                                         // 0  PRK_PauseMenu
+    { "Paused", 1.0f, 1.0f, 1, 10, s_arespkPauseMenu },                                         // 0  PRK_PauseMenu
     { "Game Over. Try again?", 1.0f, 1.0f, 0, 2, s_arespkYesNo },                              // 1  PRK_GameOver
     { "Really Quit?", 1.0f, 1.0f, 0, 2, s_arespkYesNo },                                      // 2  PRK_QuitConfirm
     { pchzMemcardSaveCreate, 0.7f, 1.0f, 0, 2, s_arespkYesNo },                               // 3  PRK_MemcardMissing
@@ -701,7 +714,11 @@ inline PRD s_mpprkprd[PRK_Max] =
 	{ "Keyboard Mapping", 0.8f, 0.55f, 1, static_cast<int>(std::size(s_arespkKeyboardMapping)), s_arespkKeyboardMapping }, // 35
 	{ "Controller Mapping", 0.8f, 0.55f, 1, static_cast<int>(std::size(s_arespkKeyboardMapping)), s_arespkKeyboardMapping }, // 36
 	{ "Sound", 1.0f, 0.8f, 1, static_cast<int>(std::size(s_arespkSoundMenu)), s_arespkSoundMenu }, // 37
-	{ "Language...", 1.0f, 1.0f, 1, static_cast<int>(std::size(s_arespkLanguageMenu)), s_arespkLanguageMenu } // 38
+	{ "Language...", 1.0f, 1.0f, 1, static_cast<int>(std::size(s_arespkLanguageMenu)), s_arespkLanguageMenu }, // 38
+    { nullptr, 1.0f, 0.65f, 1, 0, nullptr }, // 39 Trophies
+    { nullptr, 0.65f, 0.8f, 1, 1, s_trophyBack }, // 40 Trophy detail
+    { "Debug", 1.0f, 1.0f, 1, 0, nullptr },
+    { "Reset all trophies?", 1.0f, 1.0f, 0, 2, s_arespkYesNo }
 };
 
 static_assert(sizeof(s_mpprkprd) / sizeof(s_mpprkprd[0]) == PRK_Max);

@@ -40,7 +40,7 @@ with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
 
 launcher_src=ROOT/'platform/3ds/launcher_extract_3ds.cpp'
 launcher_obj=CORE/'launcher_extract_3ds.o'
-launcher_deps=[launcher_src,ROOT/'platform/3ds/launcher_extract_3ds.h',ROOT/'platform/3ds/launcher_ui_3ds.h',ROOT/'platform/3ds/fmv_decode_3ds.h',ROOT/'File Extractor GUI/Data/DialogAudioTable.inc',*brx_deps]
+launcher_deps=[launcher_src,ROOT/'platform/3ds/launcher_extract_3ds.h',ROOT/'platform/3ds/launcher_ui_3ds.h',ROOT/'platform/3ds/launcher_graphics.inc',ROOT/'platform/3ds/fmv_decode_3ds.h',ROOT/'File Extractor GUI/Data/DialogAudioTable.inc',*brx_deps]
 if not launcher_obj.exists() or launcher_obj.stat().st_mtime<max(p.stat().st_mtime for p in launcher_deps):
  res=subprocess.run([str(CC),*brx_flags,'-Wall','-Wextra','-I'+str(DK/'libctru/include'),'-I'+str(ROOT/'platform/3ds'),'-I'+str(ROOT/'File Extractor GUI'),'-c',str(launcher_src),'-o',str(launcher_obj)],stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
  (CORE/'launcher-compile.log').write_text(res.stdout)

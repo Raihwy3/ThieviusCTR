@@ -113,47 +113,10 @@ bool startJob(int download) {
     return sJob.worker != nullptr;
 }
 
-void drawActions(const char* action) {
-    const char* back = std::strstr(action, "B:");
-    if (std::strncmp(action, "A:", 2) == 0) {
-        const int leftWidth = (back && back > action && (back - action) < 15) ? int(back - action) : 15;
-        CaneLauncherText(21, 5, action, leftWidth);
-    } else {
-        CaneLauncherText(21, 5, "PLEASE WAIT", 15);
-    }
-    if (back) {
-        CaneLauncherText(21, 23, back, 14);
-    }
-}
-
 void drawUpdateUi(const char* stage, const char* message, const char* action,
                   unsigned done, unsigned total) {
-    consoleSelect(sTopConsole);
-    consoleClear();
-    CaneLauncherTopChrome("LAUNCHER UPDATE", stage, nullptr);
-    if (total > 0u) {
-        CaneLauncherBar(20, 9, 30, done, total);
-        std::printf("\x1b[22;23H%3u%%", CaneLauncherPercent(done, total));
-    } else {
-        CaneLauncherText(20, 14, "UPDATE SERVICE", 30);
-    }
-    CaneLauncherText(24, 5, "OPTIONAL LAUNCHER UPDATE", 40);
-    CaneLauncherLine(26, 5, 40);
-    CaneLauncherText(28, 5, "Installed " CANE_RELEASE_TAG, 40);
-
-    consoleSelect(sBottomConsole);
-    consoleClear();
-    CaneLauncherBottomChrome("LAUNCHER UPDATE");
-    CaneLauncherText(7, 5, "INSTALLED", 15);
-    CaneLauncherText(8, 5, CANE_RELEASE_TAG, 15);
-    if ((sJob.download || __atomic_load_n(&sJob.done, __ATOMIC_ACQUIRE)) && sJob.release.tag[0]) {
-        CaneLauncherText(7, 23, "AVAILABLE", 14);
-        CaneLauncherText(8, 23, sJob.release.tag, 14);
-    }
-    CaneLauncherMessage(12, message, 7);
-    drawActions(action);
-    gfxFlushBuffers();
-    gfxSwapBuffers();
+    const char* available=(sJob.download || __atomic_load_n(&sJob.done,__ATOMIC_ACQUIRE))?sJob.release.tag:"";
+    CaneLauncherDrawUpdate(stage,message,action,done,total,CANE_RELEASE_TAG,available);
 }
 
 int scanActionButtons() {

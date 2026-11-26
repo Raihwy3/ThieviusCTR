@@ -9,6 +9,7 @@
 #include "safe_touch.h"
 
 extern bool CaneDialogueOnBottom3ds();
+extern bool CaneBottomMonitor3ds();
 extern bool CaneSwapBA3ds();
 extern bool CaneGyroEnabled3ds();
 extern int CaneGyroSensitivity3ds();
@@ -151,8 +152,8 @@ void CanePollJoy3ds(JOY* joy)
             }
         } else if(CaneDialogueOnBottom3ds()) {
             if(!touching)joy->current[BTN_CROSS]=true;
-        } else if(g_ui.uis==UIS_Attract) {
-            if(!touching && point.py>=156 && point.py<206)joy->current[point.px<160?BTN_START:BTN_SELECT]=true;
+        } else if(g_ui.uis==UIS_Attract && !CaneBottomMonitor3ds()) {
+            if(!touching && point.py>=156 && point.py<206)joy->current[point.px<108?BTN_START:point.px<212?BTN_SELECT:BTN_SQUARE]=true;
         } else if(g_ui.uis==UIS_Playing || g_ui.uis==UIS_Hub) {
             const float dx=float(int(point.px)-originX),dy=float(originY-int(point.py));
             const float distance=std::hypot(dx,dy);

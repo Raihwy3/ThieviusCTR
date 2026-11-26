@@ -2,12 +2,41 @@
 #include "hide.h"
 #include <cstdio>
 
+namespace
+{
+    constexpr int kXpFreedSentinel = -0x58504652;
+    const SW* s_pswXpPool = nullptr;
+    XP* s_pxpFree = nullptr;
+    size_t s_axpHighWater = 0;
+
+    void SyncSwXpPool(SW* psw)
+    {
+        if (psw != s_pswXpPool || psw->axp.size() < s_axpHighWater)
+        {
+            s_pswXpPool = psw;
+            s_pxpFree = nullptr;
+            s_axpHighWater = psw->axp.size();
+        }
+    }
+}
+
 XP* AllocSwXp(SW* psw)
 {
+    SyncSwXpPool(psw);
+
+    if (s_pxpFree != nullptr)
+    {
+        XP* pxp = s_pxpFree;
+        s_pxpFree = pxp->pxpNext;
+        *pxp = XP{};
+        return pxp;
+    }
+
     auto pxpOwned = std::make_unique<XP>();
     XP* pxp = pxpOwned.get();
 
     psw->axp.push_back(std::move(pxpOwned));
+    s_axpHighWater = psw->axp.size();
 
     *pxp = XP{};
     return pxp;
@@ -189,19 +218,20 @@ void RecalcSwXpMovement(SW* psw, int cpxp, XP** apxp)
 
 void FreeSwXpList(SW* psw, XP* pxp)
 {
+    if (psw == nullptr || pxp == nullptr)
+        return;
+
+    SyncSwXpPool(psw);
+
     while (pxp != nullptr)
     {
         XP* pxpNext = pxp->pxpNext;
+        if (pxp->ipxp == kXpFreedSentinel)
+            break;
 
-        auto it = std::find_if(psw->axp.begin(), psw->axp.end(),
-            [pxp](const std::unique_ptr<XP>& pxpOwned)
-            {
-                return pxpOwned.get() == pxp;
-            });
-
-        if (it != psw->axp.end())
-            psw->axp.erase(it);
-
+        pxp->ipxp = kXpFreedSentinel;
+        pxp->pxpNext = s_pxpFree;
+        s_pxpFree = pxp;
         pxp = pxpNext;
     }
 }
@@ -740,14 +770,18 @@ int CsbiIntersectSphereBsp(glm::vec3* pposCenter, float sRadius, int cbsp, BSP* 
     int cvsxp = 0;
     VSXP avsxp[64] = {};
 
-    std::vector<BSP> abspTemp;
     BSP* abspWork = absp;
     BSP* pbspWorkLast = pbspPrune;
     int cbspWork = cbsp;
 
     if (pbspPrune == nullptr)
     {
-        abspTemp.resize(cbsp);
+        if (cbsp <= 0 || absp == nullptr)
+            return 0;
+
+        static std::vector<BSP> abspTemp;
+        if (abspTemp.size() < static_cast<size_t>(cbsp))
+            abspTemp.resize(static_cast<size_t>(cbsp));
         abspWork = abspTemp.data();
         pbspWorkLast = abspWork;
 

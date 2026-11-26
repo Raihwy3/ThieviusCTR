@@ -138,7 +138,7 @@ public:
         consoleSelect(bottom_);
 
         if (winFrames_ > 0 || force) {
-            const char* fpsColor = (fps >= 27.0) ? "32;1" : ((fps >= 20.0) ? "33;1" : "31;1");
+            const char* fpsColor = (fps >= targetFps * 0.9) ? "32;1" : ((fps >= targetFps * (2.0 / 3.0)) ? "33;1" : "31;1");
             conPrintf("\x1b[6;1H \x1b[37;1mFPS  %4.1f /%2u.0      frame %5.1f ms\x1b[0m ", fps, targetFps_, avgFrameMs);
             printBarLine(7, 7, 20, fps / targetFps, fpsColor, std::min(fpsPct, 999u));
 
@@ -172,8 +172,11 @@ public:
         if (winFrames_ > 0 || dtTicks >= kRefreshTicks) resetWindow();
     }
 
+    const uint32_t* generationPtr() const { return &generation_; }
+
 private:
-    unsigned targetFps_ = 60;
+    unsigned targetFps_ = 30;
+    mutable uint32_t generation_ = 0;
     static ssize_t redirectStdoutToStderr(struct _reent*, void*, const char* ptr, size_t len) {
         if (ptr && len > 0u && stderr) std::fwrite(ptr, 1, len, stderr);
         return ssize_t(len);
@@ -200,6 +203,7 @@ private:
             std::fwrite(buf, 1, len, stdout);
             std::fflush(stdout);
         }
+        ++generation_;
     }
 
     void printBarLine(int row, int col, int width, double ratio, const char* colorCode, unsigned pctText) const {

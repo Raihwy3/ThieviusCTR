@@ -1,4 +1,5 @@
 #include "coin.h"
+#include "trophies.h"
 #include "target.h"
 #include "chkpnt.h"
 #include "acr.h"
@@ -1141,6 +1142,7 @@ void AddLife()
 void OnCoinSmack(COIN* pcoin)
 {
 	++g_pgsCur->ccoin;
+    trophies::Coin(g_pgsCur->ccoin);
 
 	if (g_pgsCur->ccoin <= 99)
 		return;

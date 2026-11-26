@@ -417,7 +417,12 @@ int ClsgClipCylinderToBsp(BSPC* pbspc, GEOM* pgeom, glm::vec3* ppos0, glm::vec3*
     glm::vec3 posMid = (*ppos0 + *ppos1) * 0.5f;
     float sSegment = glm::length(*ppos0 - *ppos1);
 
-    std::vector<BSP> abspPruned(pbspc->cbspFull);
+    if (pbspc->cbspFull <= 0)
+        return 0;
+
+    static std::vector<BSP> abspPruned;
+    if (abspPruned.size() < static_cast<size_t>(pbspc->cbspFull))
+        abspPruned.resize(static_cast<size_t>(pbspc->cbspFull));
     BSP* pbspNext = abspPruned.data();
 
     PRUNE prune = PruneBsp(pbspc->absp.data(), &posMid, sSegment * 0.5f + sRadiusCylinder, &pbspNext);
@@ -657,8 +662,9 @@ int ClsgClipEdgeToCylinder(glm::vec3* pposCylinder0, glm::vec3* pposCylinder1, f
 
 int ClsgMergeAlsg(int clsg, LSG* alsg)
 {
-    std::vector<LSG_ENDPOINT> endpoints;
-    endpoints.reserve(clsg * 2);
+    static std::vector<LSG_ENDPOINT> endpoints;
+    endpoints.clear();
+    endpoints.reserve(static_cast<size_t>(clsg) * 2);
 
     for (int i = 0; i < clsg; i++) {
         endpoints.push_back({ alsg[i].au[0], 0, alsg[i].apos[0], alsg[i].anormal[0] });

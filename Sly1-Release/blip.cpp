@@ -744,21 +744,24 @@ BLIPG* PblipgNew(SW* psw)
 	// count by SW address. World allocations can reuse an old SW address after a
 	// level transition; the cached value then incorrectly made a fresh pool look
 	// as though it had already reached the safety ceiling.
-	const int cblipgPool = CountSwBlipgObjects(psw);
-	if (pblipg == nullptr && cblipgPool < kBlipgPoolMaximum)
+	if (pblipg == nullptr)
 	{
-		pblipg = static_cast<BLIPG*>(
-			PloNew(CID_BLIPG, psw, nullptr, OID_blip_group, -1));
-		fAlreadyActive = true;
-	}
-	else if (pblipg == nullptr)
-	{
-		static bool s_fReportedBlipgPoolLimit = false;
-		if (!s_fReportedBlipgPoolLimit)
+		const int cblipgPool = CountSwBlipgObjects(psw);
+		if (cblipgPool < kBlipgPoolMaximum)
 		{
-			std::cerr << "[ERROR] [Particles] BLIPG pool reached its bounded limit ("
-				<< kBlipgPoolMaximum << "); particle groups are being dropped.\n";
-			s_fReportedBlipgPoolLimit = true;
+			pblipg = static_cast<BLIPG*>(
+				PloNew(CID_BLIPG, psw, nullptr, OID_blip_group, -1));
+			fAlreadyActive = true;
+		}
+		else
+		{
+			static bool s_fReportedBlipgPoolLimit = false;
+			if (!s_fReportedBlipgPoolLimit)
+			{
+				std::cerr << "[ERROR] [Particles] BLIPG pool reached its bounded limit ("
+					<< kBlipgPoolMaximum << "); particle groups are being dropped.\n";
+				s_fReportedBlipgPoolLimit = true;
+			}
 		}
 	}
 

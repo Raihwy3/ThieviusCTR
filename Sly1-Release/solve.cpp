@@ -1,4 +1,35 @@
 #include "solve.h"
+#include <deque>
+
+namespace
+{
+    struct SolveGroupScratch
+    {
+        std::vector<int> acpso;
+        std::vector<SO*> aapsoFlat;
+        std::vector<SO**> aapso;
+        DZG dzg;
+    };
+
+    struct ScopedSolveScratch
+    {
+        static inline std::deque<SolveGroupScratch> s_stack;
+        static inline size_t s_depth = 0;
+        SolveGroupScratch* scratch;
+
+        ScopedSolveScratch()
+        {
+            if (s_depth == s_stack.size())
+                s_stack.emplace_back();
+            scratch = &s_stack[s_depth++];
+        }
+
+        ~ScopedSolveScratch()
+        {
+            --s_depth;
+        }
+    };
+}
 
 void SolveSwGroup(SW* psw, int cpsoRoot, SO** apsoRoot, int cpxp, XP** apxp, float dt, GRFSG grfsg)
 {
@@ -57,16 +88,27 @@ void SolveSwGroup(SW* psw, int cpsoRoot, SO** apsoRoot, int cpxp, XP** apxp, flo
 
     const bool fPivot = (grfsg & GRFSG_Pivot) != 0;
 
-    std::vector<int> acpso(cpsoRoot, 0);
-    std::vector<std::vector<SO*>> aapsoStorage(cpsoRoot);
-    std::vector<SO**> aapso(cpsoRoot, nullptr);
+    if (cpsoRoot <= 0 || cpxp < 0) {
+        return;
+    }
+
+    ScopedSolveScratch scoped;
+    auto& scratch = *scoped.scratch;
+    scratch.acpso.assign(static_cast<size_t>(cpsoRoot), 0);
+    const size_t aapsoTotal = static_cast<size_t>(cpsoRoot) * 48;
+    if (scratch.aapsoFlat.size() < aapsoTotal)
+        scratch.aapsoFlat.resize(aapsoTotal);
+    if (scratch.aapso.size() < static_cast<size_t>(cpsoRoot))
+        scratch.aapso.resize(static_cast<size_t>(cpsoRoot));
+
+    int* const acpso = scratch.acpso.data();
+    SO*** const aapso = scratch.aapso.data();
 
     for (int i = 0; i < cpsoRoot; ++i) {
         SO* psoRoot = apsoRoot[i];
 
         psoRoot->ipsoRoot = i;
-        aapsoStorage[i].resize(48);
-        aapso[i] = aapsoStorage[i].data();
+        aapso[i] = scratch.aapsoFlat.data() + static_cast<size_t>(i) * 48;
         psoRoot->pvtso->pfnRenumberSo(psoRoot, &acpso[i], aapso[i]);
     }
 
@@ -74,7 +116,7 @@ void SolveSwGroup(SW* psw, int cpsoRoot, SO** apsoRoot, int cpxp, XP** apxp, flo
         apxp[i]->ipxp = i;
     }
 
-    DZG dzg;
+    DZG& dzg = scratch.dzg;
     InitDzg(&dzg, cpxp);
 
     for (int i = 0; i < cpxp; ++i) {
@@ -117,9 +159,9 @@ void SolveSwGroup(SW* psw, int cpsoRoot, SO** apsoRoot, int cpxp, XP** apxp, flo
 
         }
 
-        SolveDzg(&dzg, 4, cpxp, apxp, acpso.data(), aapso.data());
+        SolveDzg(&dzg, 4, cpxp, apxp, acpso, aapso);
 
-        ApplyDzg(&dzg, cpsoRoot, acpso.data(), aapso.data(), 100.0f, 1.0f);
+        ApplyDzg(&dzg, cpsoRoot, acpso, aapso, 100.0f, 1.0f);
 
         for (int i = 0; i < cpsoRoot; ++i) {
             apsoRoot[i]->pvtso->pfnDisplaceSo(apsoRoot[i], 0);
@@ -174,8 +216,8 @@ void SolveSwGroup(SW* psw, int cpsoRoot, SO** apsoRoot, int cpxp, XP** apxp, flo
     }
 
 
-    SolveDzgFric(&dzg, grfsg & ~GRFSG_Penetration, cpxp, apxp, acpso.data(), aapso.data(), dt);
-    ApplyDzg(&dzg, cpsoRoot, acpso.data(), aapso.data(), 5000.0f, 50.0f);
+    SolveDzgFric(&dzg, grfsg & ~GRFSG_Penetration, cpxp, apxp, acpso, aapso, dt);
+    ApplyDzg(&dzg, cpsoRoot, acpso, aapso, 5000.0f, 50.0f);
 
 cleanup:
     for (int i = 0; i < cpsoRoot; ++i) {
@@ -191,7 +233,7 @@ cleanup:
         }
 
         for (int j = 0; j < acpso[i]; ++j) {
-            aapsoStorage[i][j]->ipsoRoot = -1;
+            aapso[i][j]->ipsoRoot = -1;
         }
     }
 
@@ -325,8 +367,12 @@ void SortSwGroup(int cpso, SO** apso)
     if (cpso <= 1 || !apso)
         return;
 
-    std::vector<SO*> sorted(static_cast<std::size_t>(cpso));
-    std::vector<unsigned int> keys(static_cast<std::size_t>(cpso), 0);
+    static std::vector<SO*> sorted;
+    static std::vector<unsigned int> keys;
+    if (sorted.size() < static_cast<std::size_t>(cpso))
+        sorted.resize(static_cast<std::size_t>(cpso));
+    if (keys.size() < static_cast<std::size_t>(cpso))
+        keys.resize(static_cast<std::size_t>(cpso));
     std::array<int, 5> bucketOffsets{};
 
     for (int i = 0; i < cpso; ++i)
@@ -361,7 +407,7 @@ void SortSwGroup(int cpso, SO** apso)
         sorted[bucketOffsets[key]++] = apso[i];
     }
 
-    std::copy(sorted.begin(), sorted.end(), apso);
+    std::copy(sorted.begin(), sorted.begin() + cpso, apso);
 }
 
 void SplitSwGroup(SW* psw, int cpso, SO** apso, float dt, GRFSG grfsg)
@@ -456,8 +502,12 @@ void SolveSw(SW* psw, float dt, GRFSG grfsg)
 {
     const int cpsoCapacity = std::max(psw->cpsoRoot, 0);
 
-    std::vector <SO*> apso(static_cast<std::size_t>(cpsoCapacity));
-    std::vector <SO*> apsoLocked(static_cast<std::size_t>(cpsoCapacity));
+    static std::vector<SO*> apso;
+    static std::vector<SO*> apsoLocked;
+    if (apso.size() < static_cast<std::size_t>(cpsoCapacity))
+        apso.resize(static_cast<std::size_t>(cpsoCapacity));
+    if (apsoLocked.size() < static_cast<std::size_t>(cpsoCapacity))
+        apsoLocked.resize(static_cast<std::size_t>(cpsoCapacity));
 
     if ((grfsg & 1) != 0)
     {

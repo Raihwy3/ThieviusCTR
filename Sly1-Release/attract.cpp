@@ -85,6 +85,12 @@ void UpdateAttractText(ATTRACT* pattract)
         }
     }
 
+#ifdef __3DS__
+    if(pattract->fJoyValid) {
+        const size_t used=std::strlen(pattract->achzDraw);
+        std::snprintf(pattract->achzDraw+used,sizeof(pattract->achzDraw)-used,"\nY : Trophies");
+    }
+#endif
     pattract->pfont->PushScaling(pattract->rFontScale, pattract->rFontScale);
     CRichText sizingText(pattract->achzDraw, pattract->pfont);
     ResizeBlot(pattract, sizingText.DxMaxLine(), sizingText.DyWrap(0.0f));

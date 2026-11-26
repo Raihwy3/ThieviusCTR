@@ -5,11 +5,12 @@
 #include "native_display_math.inc"
 #include "render_batch_3ds.h"
 #include "native_texture_etc.inc"
+#include "flat_map_3ds.h"
 extern "C" {
 #include "vendor/PICASR/fsr3ds.inc"
 }
+#include <deque>
 #include <map>
-#include <unordered_map>
 #include <set>
 #include <cstring>
 #include <malloc.h>
@@ -48,6 +49,7 @@ void CaneCelNative(const RPLCEL& packet) {
 enum class CaneHudLayer {Top,Coins,Health,Dialogue};
 static bool caneLoading=false;
 static bool caneStartupPresentation=true;
+bool CaneTrophiesGameplay3ds() {return !caneStartupPresentation;}
 static const char* caneLoadingText="Loading...";
 static CaneHudLayer caneHudLayer=CaneHudLayer::Top;
 static TV* canePortraitContext=nullptr;
@@ -71,7 +73,16 @@ void CaneGlyphsNativeAdditive(const std::vector<BLOTLINEVERTEX>& vertices,GLuint
     }
     auto clipped=caneCompassClip?CaneClipUi(vertices):vertices;
     if(caneRectClip)clipped=CaneClipRectUi(clipped);
-    if(!clipped.empty())caneHud.push_back({std::move(clipped),texture,nullptr,additive,caneHudLayer,canePortraitContext});
+    if(!clipped.empty()) {
+        if(!caneHud.empty() && !caneHud.back().tv && caneHud.back().texture==texture &&
+           caneHud.back().additive==additive && caneHud.back().layer==caneHudLayer &&
+           caneHud.back().portrait==canePortraitContext &&
+           caneHud.back().vertices.size()+clipped.size()<=30000) {
+            caneHud.back().vertices.insert(caneHud.back().vertices.end(),clipped.begin(),clipped.end());
+        } else {
+            caneHud.push_back({std::move(clipped),texture,nullptr,additive,caneHudLayer,canePortraitContext});
+        }
+    }
 }
 void CaneGlyphsNative(const std::vector<BLOTLINEVERTEX>& vertices,GLuint texture) {
     CaneGlyphsNativeAdditive(vertices,texture,false);
@@ -143,11 +154,11 @@ class CaneRuntimeGraphics {
         glm::vec3 worldCenter{0};float worldRadius=0;
         uint8_t texMode=0;int16_t id0=-1,id1=-1,id2=-1;
         C3D_Tex* tex0=nullptr;C3D_Tex* tex1=nullptr;C3D_Tex* tex2=nullptr;
-        bool texValid=false;bool threeWay=false;
+        bool texValid=false;bool threeWay=false;bool hasSoftAlpha=false;
     };
     struct GlobCache {
-        GLuint vao=0;glm::mat4 model{1};unsigned used=0;
-        bool moved=false;bool flipped=false;bool anyWorldBaked=false;
+        GLuint vao=0;glm::mat4 model{1};unsigned used=0,seenFrame=0;
+        bool moved=false;bool flipped=false;bool anyWorldBaked=false;bool instanced=false;
         std::vector<SubCache> subs;
     };
     struct GlobKey {
@@ -159,7 +170,7 @@ class CaneRuntimeGraphics {
     };
     struct Draw {
         const Vertex* vertices;const uint16_t* indices;unsigned count;
-        C3D_Tex* tex0;C3D_Tex* tex1;C3D_Tex* tex2;uint8_t texMode;bool worldBaked;bool flipped;
+        C3D_Tex* tex0;C3D_Tex* tex1;C3D_Tex* tex2;uint8_t texMode;bool worldBaked;bool flipped;bool hasSoftAlpha;
         const CanePacket* material;RP phase;float distance;const SHD* shader;const SUBGLOB* sub;
     };
     struct BatchEntry {
@@ -172,7 +183,7 @@ class CaneRuntimeGraphics {
     };
     struct FadedWorldDraw {
         const uint16_t* src;unsigned count;const Vertex* chunkVerts;uint8_t texMode;
-        C3D_Tex* tex0;C3D_Tex* tex1;C3D_Tex* tex2;const CanePacket* material;RP phase;const SUBGLOB* sub;
+        C3D_Tex* tex0;C3D_Tex* tex1;C3D_Tex* tex2;const CanePacket* material;RP phase;const SUBGLOB* sub;bool hasSoftAlpha;
     };
     struct ShadowReceiver {
         unsigned mapIndex;const Vertex* vertices;const CanePacket* packet;const SUBGLOB* sub;bool worldBaked;
@@ -180,7 +191,7 @@ class CaneRuntimeGraphics {
     struct CasterSub {const Vertex* vertices;const uint16_t* indices;unsigned indexCount;};
     struct ShadowPass {unsigned firstSub,subCount,overlayFirst=0,overlayCount=0;glm::mat4 projection;float alpha;};
     struct CasterVert {const SUBGLOB* sub;const Vertex* vertices;};
-    struct ParticleDraw {unsigned first,count;C3D_Tex* tex;bool additive;};
+    struct ParticleDraw {unsigned first,count;C3D_Tex* tex;bool additive;uint8_t maxAlpha;};
     struct HudDraw {
         unsigned first,count;C3D_Tex* tex;TV* tv;bool additive=false;
         CaneHudLayer layer=CaneHudLayer::Top;
@@ -197,6 +208,9 @@ class CaneRuntimeGraphics {
     C3D_RenderTarget* bottomTarget=nullptr;
     PrintConsole* bottomConsole=nullptr;
     std::vector<u16> bottomConsoleShadow;
+    const uint32_t* bottomConsoleGen=nullptr;
+    struct BottomFbStamp {void* ptr=nullptr;uint32_t gen=0;bool valid=false;};
+    BottomFbStamp bottomFbStamps[2]{};
     bool bottomOutput=false;
     C3D_Tex postTexture{};
     C3D_RenderTarget* postTarget=nullptr;
@@ -205,7 +219,38 @@ class CaneRuntimeGraphics {
     bool stereoWasActive=false;
     bool started=false,programStarted=false;
     int projection=-1,tint=-1,stereo=-1,filterOffset=-1,filterOffsetNegative=-1;
-    struct PreLight {const LIGHT* light;glm::vec3 dir;glm::vec3 pos;float maxR;float maxRSq;bool isDir;};
+    struct PreLight {
+        const LIGHT* light;
+        glm::vec3 dir;
+        glm::vec3 pos;
+        glm::vec3 rgbaColor;
+        float maxR,maxRSq;
+        float fallOffX,fallOffY;
+        float ruShadow,duShadow;
+        float ruMidtone,duMidtone;
+        float ruHighlight,duHighlight;
+        uint8_t kind;
+        bool fDynamic;
+        bool fExcludeDynamic;
+    };
+    static PreLight makePreLight(const LIGHT* light) {
+        glm::vec3 dir(0);
+        if(light->lightk==LIGHTK_Direction) {glm::vec3 d=light->xf.matWorld[2];float l=glm::length(d);if(l>.0001f)dir=d/l;}
+        else if(light->lightk==LIGHTK_Frustrum || light->lightk==LIGHTK_Spot) {glm::vec3 d=light->xf.matWorld*light->normalLocal;float l=glm::length(d);if(l>.0001f)dir=d/l;}
+        const float r=light->lmFallOffS.gMax;
+        return {light,dir,light->xf.posWorld,light->rgbaColor,r,r*r,
+                light->agFallOff.x,light->agFallOff.y,
+                light->ltfn.ruShadow,light->ltfn.duShadow,
+                light->ltfn.ruMidtone,light->ltfn.duMidtone,
+                light->ltfn.ruHighlight,light->ltfn.duHighlight,
+                uint8_t(light->lightk),light->fDynamic!=0,light->fExcludeDynamicObjects!=0};
+    }
+    static inline glm::vec3 transformPoint(const glm::mat4& m,const glm::vec3& p) {
+        return glm::vec3(
+            m[0][0]*p.x+m[1][0]*p.y+m[2][0]*p.z+m[3][0],
+            m[0][1]*p.x+m[1][1]*p.y+m[2][1]*p.z+m[3][1],
+            m[0][2]*p.x+m[1][2]*p.y+m[2][2]*p.z+m[3][2]);
+    }
     std::vector<PreLight> frameLights;
     struct WorkerScratch {
         std::vector<PreLight> meshLights;
@@ -215,13 +260,12 @@ class CaneRuntimeGraphics {
         std::vector<glm::vec4> celClip;
         std::vector<glm::vec2> celNdc;
         std::vector<uint8_t> celValid;
-        std::vector<glm::vec3> shadowWorld;
         std::vector<glm::vec4> shadowUv;
         std::vector<uint8_t> shadowMask;
         void reserveDefault() {
             meshLights.reserve(64);boneNormMats.reserve(64);activePoses.reserve(16);
             boneMvps.reserve(64);celClip.reserve(1024);celNdc.reserve(1024);celValid.reserve(1024);
-            shadowWorld.reserve(512);shadowUv.reserve(512);shadowMask.reserve(512);
+            shadowUv.reserve(512);shadowMask.reserve(512);
         }
     };
     WorkerScratch mainScratch;
@@ -231,7 +275,15 @@ class CaneRuntimeGraphics {
     uint16_t* texStage=nullptr;size_t texStageBytes=0;
     unsigned vramTexCount=0,fcramTexCount=0,etcTexCount=0;
     size_t vramTextureBytes=0,fcramTextureBytes=0,textureSavedBytes=0;
-    static constexpr size_t kVramTextureBudget=3*1024*1024;
+    static size_t vramTextureBudget(int mode) {
+        if(mode==0)return 4096u*1024u;
+        if(mode==3)return 1280u*1024u;
+        if(mode==6)return 1792u*1024u;
+        return 3456u*1024u;
+    }
+    static size_t vramTextureHeadroom(int mode) {
+        return mode==3?384u*1024u:512u*1024u;
+    }
     struct ShadowMap {C3D_Tex texture{};C3D_RenderTarget* target=nullptr;};
     ShadowMap shadowMaps[4];
     struct TexSlot {C3D_Tex tex{};bool loaded=false;bool inVram=false;};
@@ -241,11 +293,14 @@ class CaneRuntimeGraphics {
     std::vector<SharedAtlas> sharedAtlases;
     size_t sharedAtlasBytes=0;
     static constexpr size_t kSharedAtlasBudget=640*1024;
-    std::unordered_map<GLuint,int> glTexToImage;
-    std::unordered_map<GlobKey,GlobCache,GlobKeyHash> globCaches;
-    std::unordered_map<const SUBGLOB*,IndexBuf> indexBuffers;
+    CaneFlatMap<GLuint,int> glTexToImage;
+    std::deque<GlobCache> globCachePool;
+    std::vector<uint32_t> globCacheFree;
+    CaneFlatMap<GlobKey,uint32_t,GlobKeyHash> globCacheMap;
+    CaneFlatMap<const SUBGLOB*,IndexBuf,CanePtrHash> indexBuffers;
     struct CelCache {const CELPOINT* source=nullptr;size_t count=0;GLuint vao=0;std::vector<unsigned> indices,first;};
-    std::unordered_map<const GLOB*,CelCache> celCaches;
+    std::deque<CelCache> celCachePool;
+    CaneFlatMap<const GLOB*,uint32_t,CanePtrHash> celCacheMap;
     Vertex* dynamic[2]{};size_t dynamicCapacity=0,meshBytes=0;
     Vertex* postQuad=nullptr;
     uint16_t* batchIndices[2]{};size_t batchIndexCapacity=0;
@@ -262,8 +317,11 @@ class CaneRuntimeGraphics {
     std::vector<HudDraw> hudDraws;
     std::vector<OutlineLine> outlineLines;
     static constexpr unsigned outlineBudget=4096;
+    static bool isBinaryAlphaTex(const C3D_Tex* tex) {
+        return !tex || tex->fmt==GPU_RGBA5551 || tex->fmt==GPU_ETC1;
+    }
     struct CelJob {const RPLCEL* packet;const CelCache* cache;glm::mat4 mvp;glm::vec4 color;float minLinePixels;};
-    struct alignas(32) AnimJob {uint32_t packetIdx,subIdx,dynOffset,boneNormOffset,boneNormCount;float scale;uint8_t texMode;int16_t i0,i1,i2;};
+    struct alignas(32) AnimJob {uint32_t packetIdx,subIdx,dynOffset,boneNormOffset,boneNormCount;float scale;uint8_t texMode;bool hasSoftAlpha;int16_t i0,i1,i2;};
     struct AnimDrawSlot {uint32_t drawIdx;uint8_t bucket;bool isTv;};
     struct HudJob {const CaneHudBatch* hud;uint32_t dynOffset;};
     struct ShadowMapJobInfo {const SHADOW* shadow;glm::vec3 negCastDir;glm::vec3 camPos;float cl;uint8_t alphaByte;};
@@ -293,6 +351,9 @@ class CaneRuntimeGraphics {
     std::vector<HudJob> hudJobs;
     ShadowMapJobInfo shadowMapInfo[4]{};
     std::vector<std::vector<Vertex>> shadowJobOut;
+    std::vector<C3D_Mtx> packetMvps;
+    std::vector<uint8_t> packetMvpValid;
+    std::vector<uint32_t> packetGcIdx;
     struct WaveGuard {
         CaneRuntimeGraphics* g;bool active;
         void finish() {if(active) {g->waitWave();active=false;}}
@@ -347,9 +408,8 @@ class CaneRuntimeGraphics {
     }
     int imageForGlTex(GLuint glTex) {
         if(!glTex)return -1;
-        auto it=glTexToImage.find(glTex);
-        if(it!=glTexToImage.end()) {
-            int idx=it->second;
+        if(int* found=glTexToImage.find(glTex)) {
+            int idx=*found;
             if(idx>=0 && size_t(idx)<g_abmp.size() && g_abmp[idx].glDiffuseMap==glTex)return idx;
         }
         for(size_t i=0;i<g_abmp.size();++i)if(g_abmp[i].glDiffuseMap==glTex) {glTexToImage[glTex]=int(i);return int(i);}
@@ -406,14 +466,14 @@ class CaneRuntimeGraphics {
         const std::vector<uint8_t>* sharedPixels=nullptr;
         const bool sharedEligible=(controllerAtlas || textAtlas) && bytes<=kSharedAtlasBudget;
         if(sharedEligible) {
-            const uint64_t meta[]={uint64_t(source.bmpWidth),uint64_t(source.bmpHeight),uint64_t(source.textureFormat),uint64_t(width),uint64_t(height),uint64_t(fmt),uint64_t(textAtlas),1};
+            const uint64_t meta[]={uint64_t(source.bmpWidth),uint64_t(source.bmpHeight),uint64_t(source.textureFormat),uint64_t(width),uint64_t(height),uint64_t(fmt),uint64_t(textAtlas),4};
             atlasKey=cane_texture_etc::hashBytes(reinterpret_cast<const uint8_t*>(meta),sizeof meta);
             atlasKey=cane_texture_etc::hashBytes(source.diffuseTexture.data(),source.diffuseTexture.size(),atlasKey);
             for(const auto& entry:sharedAtlases)if(entry.key==atlasKey && entry.pixels.size()==bytes) {sharedPixels=&entry.pixels;break;}
         }
         C3D_Tex tex{};
         bool inVram=false;
-        if(!atlas && vramTextureBytes+bytes<=(displayMode==6?1024*1024:kVramTextureBudget) && vramSpaceFree()>=bytes+1024*1024) {
+        if(!atlas && vramTextureBytes+bytes<=vramTextureBudget(displayMode) && vramSpaceFree()>=bytes+vramTextureHeadroom(displayMode)) {
             inVram=C3D_TexInitVRAM(&tex,width,height,fmt);
         }
         if(!inVram && !C3D_TexInit(&tex,width,height,fmt))throw std::runtime_error("Actor texture allocation failed");
@@ -449,18 +509,16 @@ class CaneRuntimeGraphics {
             unsigned sx=x*source.bmpWidth/width,sy=y*source.bmpHeight/height;
             auto p=pixel(source,sx,sy);
             unsigned index=((y/8)*(width/8)+x/8)*64+morton(x,y);
-            // The retail face has one-source-pixel counters. At 240 lines
-            // those gaps collapse under minification. Inset the coverage by
-            // one source pixel before sampling; keep the full alpha ramp and
-            // leave glyph metrics, colours and every non-text texture alone.
+            // Preserve the full-resolution atlas and its alpha ramp.
+            // Retain the lighter stroke edge without spatial averaging.
             unsigned textCoverage=p[3];
             if(textAtlas && textCoverage) {
-                for(int oy=-1;oy<=1 && textCoverage;++oy)
-                    for(int ox=-1;ox<=1 && textCoverage;++ox) {
-                        const unsigned nx=unsigned(std::clamp(int(sx)+ox,0,int(source.bmpWidth)-1));
-                        const unsigned ny=unsigned(std::clamp(int(sy)+oy,0,int(source.bmpHeight)-1));
-                        textCoverage=std::min(textCoverage,unsigned(pixel(source,nx,ny)[3]));
-                    }
+                const unsigned edge=std::min({textCoverage,
+                    unsigned(pixel(source,sx?sx-1:sx,sy)[3]),
+                    unsigned(pixel(source,std::min(sx+1,unsigned(source.bmpWidth-1)),sy)[3]),
+                    unsigned(pixel(source,sx,sy?sy-1:sy)[3]),
+                    unsigned(pixel(source,sx,std::min(sy+1,unsigned(source.bmpHeight-1)))[3])});
+                textCoverage=(textCoverage+3*edge+2)/4;
             }
             out[index]=textAtlas?uint16_t(((p[3]?unsigned(p[0]):glyphInk)<<8)|textCoverage):smoothAlpha?uint16_t((p[0]>>4)<<12|(p[1]>>4)<<8|(p[2]>>4)<<4|(p[3]>>4)):
                 uint16_t((p[0]>>3)<<11|(p[1]>>3)<<6|(p[2]>>3)<<1|(p[3]>=64));
@@ -477,8 +535,10 @@ class CaneRuntimeGraphics {
             }catch(const std::bad_alloc&) {}
         }
         if(textAtlas)std::fprintf(stderr,"Native text atlas: %ux%u LA8, full 8-bit glyph coverage\n",width,height);
-        if(textAtlas)std::fprintf(stderr,"Native text readability: inset coverage, preserved counters and alpha\n");
-        C3D_TexSetFilter(&slotEntry.tex,GPU_LINEAR,GPU_LINEAR);
+        if(textAtlas)std::fprintf(stderr,"Native text readability: full-resolution point sampling, reduced stroke weight\n");
+        // Text must not inherit the world's bilinear smoothing.
+        C3D_TexSetFilter(&slotEntry.tex,textAtlas?GPU_NEAREST:GPU_LINEAR,
+                        textAtlas?GPU_NEAREST:GPU_LINEAR);
         C3D_TexSetWrap(&slotEntry.tex,GPU_REPEAT,GPU_REPEAT);
         if(inVram) {
             GSPGPU_FlushDataCache(texStage,bytes);
@@ -565,23 +625,25 @@ class CaneRuntimeGraphics {
         return buf;
     }
     u64 tkAnim=0,tkMoved=0;
-    void shadeVertex(WorkerScratch& sc,Vertex& vertex,const CanePacket& packet,const SUBGLOB& sub,size_t index,const glm::vec3& world,glm::vec3 normal,bool alreadyWorldNorm,const glm::mat3& normalMat,bool sameAll,bool sameSatDiff,uint8_t& maxR,uint8_t& maxB) const {
+    void shadeVertex(WorkerScratch& sc,Vertex& vertex,const SUBGLOB& sub,size_t index,const glm::vec3& world,glm::vec3 normal,bool alreadyWorldNorm,const glm::mat3& normalMat,float baseAmbient,float baseMid,bool sameAll,bool sameSatDiff,uint8_t& maxR,uint8_t& maxB) const {
         const auto& input=sub.vertices[index];
         if(!alreadyWorldNorm)normal=normalMat*normal;
-        float nl=glm::length(normal);normal=nl>.0001f?normal/nl:glm::vec3(0);
-        float ambient=g_psw->lsmDefault.uShadow,mid=g_psw->lsmDefault.uMidtone+sub.unSelfIllum*.000031f;glm::vec3 highlight(0);
+        const float nlSq=glm::dot(normal,normal);
+        normal=nlSq>1e-8f?normal*(1.0f/std::sqrt(nlSq)):glm::vec3(0);
+        float ambient=baseAmbient,mid=baseMid;glm::vec3 highlight(0);
         for(const auto& pl:sc.meshLights) {
-            const LIGHT* light=pl.light;
             float attenuation=1,diffuse=0;
-            if(pl.isDir) {
+            if(pl.kind==LIGHTK_Direction) {
                 diffuse=glm::dot(normal,pl.dir);
-            } else if(light->lightk==LIGHTK_Position) {
-                glm::vec3 direction=pl.pos-world;float distSq=glm::dot(direction,direction);
-                if(distSq<.00000001f || distSq>pl.maxRSq)continue;
-                float length=std::sqrt(distSq);
-                diffuse=glm::dot(normal,direction/length);
-                attenuation=std::clamp(light->agFallOff.x+light->agFallOff.y/length,0.0f,1.0f);
-            } else if(light->lightk==LIGHTK_Frustrum || light->lightk==LIGHTK_Spot) {
+            } else if(pl.kind==LIGHTK_Position) {
+                const glm::vec3 direction=pl.pos-world;
+                const float distSq=glm::dot(direction,direction);
+                if(distSq<1e-8f || distSq>pl.maxRSq)continue;
+                const float invLen=1.0f/std::sqrt(distSq);
+                diffuse=glm::dot(normal,direction)*invLen;
+                attenuation=std::clamp(pl.fallOffX+pl.fallOffY*invLen,0.0f,1.0f);
+            } else if(pl.kind==LIGHTK_Frustrum || pl.kind==LIGHTK_Spot) {
+                const LIGHT* light=pl.light;
                 glm::vec4 clip=light->frustum*glm::vec4(world,1);
                 if(clip.w<=0 || std::abs(clip.x)>clip.w || std::abs(clip.y)>clip.w || std::abs(clip.z)>clip.w)continue;
                 float invW=1.0f/clip.w;
@@ -592,9 +654,10 @@ class CaneRuntimeGraphics {
                 diffuse=glm::dot(normal,pl.dir);
             } else continue;
             diffuse+=diffuse*diffuse*diffuse;
-            ambient+=std::max(diffuse*light->ltfn.ruShadow+light->ltfn.duShadow,0.0f)*attenuation;
-            mid+=std::max(diffuse*light->ltfn.ruMidtone+light->ltfn.duMidtone,0.0f)*attenuation;
-            highlight+=light->rgbaColor*(std::max(diffuse*light->ltfn.ruHighlight+light->ltfn.duHighlight,0.0f)*attenuation);
+            ambient+=std::max(diffuse*pl.ruShadow+pl.duShadow,0.0f)*attenuation;
+            mid+=std::max(diffuse*pl.ruMidtone+pl.duMidtone,0.0f)*attenuation;
+            const float hl=std::max(diffuse*pl.ruHighlight+pl.duHighlight,0.0f)*attenuation;
+            if(hl>0.0f)highlight+=pl.rgbaColor*hl;
         }
         float remaining=1.0f-std::max({highlight.r,highlight.g,highlight.b});
         mid=std::max(0.0f,std::min(mid,remaining));
@@ -614,7 +677,7 @@ class CaneRuntimeGraphics {
             if(vertex.color[2]>maxB)maxB=vertex.color[2];
         }
     }
-    void flatten(WorkerScratch& sc,Vertex* out,const CanePacket& packet,const SUBGLOB& sub,bool skin,bool bakeWorld,bool lit,float modelMaxScale,const glm::mat3* precompBoneNorms=nullptr,size_t precompBoneCount=0,uint8_t* outTexMode=nullptr,int* outI0=nullptr,int* outI1=nullptr,int* outI2=nullptr) const {
+    void flatten(WorkerScratch& sc,Vertex* out,const CanePacket& packet,const SUBGLOB& sub,bool skin,bool bakeWorld,bool lit,float modelMaxScale,const glm::mat3* precompBoneNorms=nullptr,size_t precompBoneCount=0,uint8_t* outTexMode=nullptr,int* outI0=nullptr,int* outI1=nullptr,int* outI2=nullptr,bool* outSoftAlpha=nullptr) const {
         sc.meshLights.clear();
         const bool isThreeWay=sub.pshd && sub.pshd->shdk==SHDK_ThreeWay;
         const bool hasThreeWayTex=isThreeWay && !sub.pshd->atex.empty();
@@ -623,22 +686,18 @@ class CaneRuntimeGraphics {
         if(doLight) {
             if(packet.tv) {
                 if(const LIGHT* light=packet.tv->plight) {
-                    glm::vec3 dir(0);const bool isDir=(light->lightk==LIGHTK_Direction);
-                    if(isDir) {glm::vec3 d=light->xf.matWorld[2];float l=glm::length(d);if(l>.0001f)dir=d/l;}
-                    else if(light->lightk==LIGHTK_Frustrum || light->lightk==LIGHTK_Spot) {glm::vec3 d=light->xf.matWorld*light->normalLocal;float l=glm::length(d);if(l>.0001f)dir=d/l;}
-                    float r=light->lmFallOffS.gMax;
-                    sc.meshLights.push_back({light,dir,light->xf.posWorld,r,r*r,isDir});
-                    if(!isDir)needWorld=true;
+                    const PreLight pl=makePreLight(light);
+                    sc.meshLights.push_back(pl);
+                    if(pl.kind!=LIGHTK_Direction)needWorld=true;
                 }
             } else {
-                glm::vec3 center=glm::vec3(packet.model*glm::vec4(sub.posCenter,1));
-                float radius=sub.sRadius*modelMaxScale;
+                const glm::vec3 center=transformPoint(packet.model,sub.posCenter);
+                const float radius=sub.sRadius*modelMaxScale;
                 for(const PreLight& pl:frameLights) {
-                    const LIGHT* light=pl.light;
-                    if(packet.dynamic && light->fExcludeDynamicObjects)continue;
-                    if(light->fDynamic && !packet.dynamic && !packet.liveLight)continue;
-                    if(!pl.isDir) {
-                        float reach=radius+pl.maxR;
+                    if(packet.dynamic && pl.fExcludeDynamic)continue;
+                    if(pl.fDynamic && !packet.dynamic && !packet.liveLight)continue;
+                    if(pl.kind!=LIGHTK_Direction) {
+                        const float reach=radius+pl.maxR;
                         if(glm::distance2(center,pl.pos)>reach*reach)continue;
                         needWorld=true;
                     }
@@ -686,6 +745,9 @@ class CaneRuntimeGraphics {
             }
         }
         uint8_t maxR=0,maxB=0;
+        bool softAlpha=false;
+        const float baseAmbient=doLight?g_psw->lsmDefault.uShadow:0.0f;
+        const float baseMid=doLight?(g_psw->lsmDefault.uMidtone+sub.unSelfIllum*.000031f):0.0f;
         const size_t vCount=sub.vertices.size();
         for(size_t index=0;index<vCount;++index) {
             const auto& input=sub.vertices[index];auto& vertex=out[index];
@@ -699,7 +761,6 @@ class CaneRuntimeGraphics {
             }
             bool alreadyWorldNorm=false;
             if(hasSkin) {
-                glm::vec4 local(position,1);
                 glm::vec3 skPos(0),skNorm(0);float total=0;
                 for(unsigned b=0;b<4;++b) {
                     float w=input.boneWeights[b];
@@ -708,11 +769,11 @@ class CaneRuntimeGraphics {
                         if(bone<nBones) {
                             const glm::mat4& bm=set.boneMatrices[bone];
                             if(w==1.0f && total==0.0f) {
-                                skPos=glm::vec3(bm*local);
+                                skPos=transformPoint(bm,position);
                                 if(doLight)skNorm=boneNorms[bone]*normal;
                                 total=1.0f;break;
                             }
-                            skPos+=glm::vec3(bm*local)*w;
+                            skPos+=transformPoint(bm,position)*w;
                             if(doLight)skNorm+=boneNorms[bone]*normal*w;
                             total+=w;
                         }
@@ -721,15 +782,16 @@ class CaneRuntimeGraphics {
                 if(total>0) {position=skPos;if(doLight){normal=skNorm;alreadyWorldNorm=true;}}
             }
             glm::vec3 world(0);
-            if(needWorld)world=glm::vec3(packet.model*glm::vec4(position,1));
+            if(needWorld)world=transformPoint(packet.model,position);
             const glm::vec3& outPos=bakeWorld?world:position;
             vertex.position[0]=outPos.x;vertex.position[1]=outPos.y;vertex.position[2]=outPos.z;
             vertex.uv[0]=input.uv.x;vertex.uv[1]=1.0f-input.uv.y;
             if(doLight) {
-                shadeVertex(sc,vertex,packet,sub,index,world,normal,alreadyWorldNorm,normalMat,sameAll,sameSatDiff,maxR,maxB);
+                shadeVertex(sc,vertex,sub,index,world,normal,alreadyWorldNorm,normalMat,baseAmbient,baseMid,sameAll,sameSatDiff,maxR,maxB);
             } else {
                 setVertexColor(vertex,input.color.r,input.color.g,input.color.b,input.color.a);
             }
+            if(vertex.color[3]>0 && vertex.color[3]<230)softAlpha=true;
         }
         if(lit && hasThreeWayTex && staticTex) {
             if(sameAll) {
@@ -754,6 +816,7 @@ class CaneRuntimeGraphics {
         }
         if(outTexMode)*outTexMode=texMode;
         if(outI0)*outI0=i0;if(outI1)*outI1=i1;if(outI2)*outI2=i2;
+        if(outSoftAlpha)*outSoftAlpha=softAlpha;
     }
     void runCelJob(WorkerScratch& sc,uint32_t idx) {
         const auto& job=celJobs[idx];
@@ -826,9 +889,9 @@ class CaneRuntimeGraphics {
         const auto& packet=canePackets[job.packetIdx];
         const auto& sub=packet.pglob->asubglob[job.subIdx];
         const glm::mat3* precomp=job.boneNormCount?(&allBoneNormMats[job.boneNormOffset]):nullptr;
-        uint8_t texMode=0;int i0=-1,i1=-1,i2=-1;
-        flatten(sc,dynamic[slot]+job.dynOffset,packet,sub,true,false,true,job.scale,precomp,job.boneNormCount,&texMode,&i0,&i1,&i2);
-        job.texMode=texMode;job.i0=int16_t(i0);job.i1=int16_t(i1);job.i2=int16_t(i2);
+        uint8_t texMode=0;bool softAlpha=false;int i0=-1,i1=-1,i2=-1;
+        flatten(sc,dynamic[slot]+job.dynOffset,packet,sub,true,false,true,job.scale,precomp,job.boneNormCount,&texMode,&i0,&i1,&i2,&softAlpha);
+        job.texMode=texMode;job.hasSoftAlpha=softAlpha;job.i0=int16_t(i0);job.i1=int16_t(i1);job.i2=int16_t(i2);
     }
     void runHudJob(uint32_t idx) const {
         const auto& job=hudJobs[idx];
@@ -854,18 +917,19 @@ class CaneRuntimeGraphics {
         const auto& packet=*rec.packet;const auto& sub=*rec.sub;
         const size_t nVerts=sub.vertices.size();
         if(!nVerts)return;
-        const glm::mat4 modelToUv=shadow->matWorldToUv*packet.model;
+        const glm::mat4 uvMat=rec.worldBaked?shadow->matWorldToUv:(shadow->matWorldToUv*packet.model);
         const glm::mat3 modelRot(packet.model);
-        sc.shadowWorld.resize(nVerts);sc.shadowUv.resize(nVerts);sc.shadowMask.resize(nVerts);
+        const glm::vec3 localNegCast=glm::transpose(modelRot)*info.negCastDir;
+        const float c0=glm::dot(modelRot[0],modelRot[0]),c1=glm::dot(modelRot[1],modelRot[1]),c2=glm::dot(modelRot[2],modelRot[2]);
+        const bool uniformRot=c0>1e-6f &&
+            std::abs(c0-c1)<1e-3f*c0 && std::abs(c0-c2)<1e-3f*c0 &&
+            std::abs(glm::dot(modelRot[0],modelRot[1]))<1e-3f*c0 &&
+            std::abs(glm::dot(modelRot[0],modelRot[2]))<1e-3f*c0 &&
+            std::abs(glm::dot(modelRot[1],modelRot[2]))<1e-3f*c0;
+        sc.shadowUv.resize(nVerts);sc.shadowMask.resize(nVerts);
         for(size_t v=0;v<nVerts;++v) {
             const auto& vx=rec.vertices[v];
-            glm::vec3 wp=rec.worldBaked
-                ?glm::vec3(vx.position[0],vx.position[1],vx.position[2])
-                :glm::vec3(packet.model*glm::vec4(vx.position[0],vx.position[1],vx.position[2],1));
-            sc.shadowWorld[v]=wp;
-            glm::vec4 uv=rec.worldBaked
-                ?(shadow->matWorldToUv*glm::vec4(wp,1))
-                :(modelToUv*glm::vec4(vx.position[0],vx.position[1],vx.position[2],1));
+            const glm::vec4 uv=uvMat*glm::vec4(vx.position[0],vx.position[1],vx.position[2],1);
             sc.shadowUv[v]=uv;
             uint8_t m=0;
             if(uv.x<0)m|=1;
@@ -879,18 +943,28 @@ class CaneRuntimeGraphics {
         auto distance=[](const Point& p,int plane) {
             switch(plane) {case 0:return p.uv.x;case 1:return p.uv.w-p.uv.x;case 2:return p.uv.y;case 3:return p.uv.w-p.uv.y;default:return p.uv.w-.0001f;}
         };
+        auto worldPos=[&](unsigned vi) {
+            const auto& vx=rec.vertices[vi];
+            const glm::vec3 p(vx.position[0],vx.position[1],vx.position[2]);
+            return rec.worldBaked?p:transformPoint(packet.model,p);
+        };
         for(size_t t=0;t<sub.indices.size() && out.size()+30<=12288;++t) {
             const auto& tri=sub.indices[t];
             const unsigned v0=tri.v1,v1=tri.v2,v2=tri.v3;
             if(v0>=nVerts || v1>=nVerts || v2>=nVerts)continue;
             if(sc.shadowMask[v0]&sc.shadowMask[v1]&sc.shadowMask[v2])continue;
-            glm::vec3 normal=modelRot*sub.vertices[v0].normal;
-            float nl=glm::length(normal);
-            if(nl>.001f && info.cl>.001f && glm::dot(normal/nl,info.negCastDir)<=-.5f)continue;
+            if(info.cl>.001f) {
+                const glm::vec3& n=sub.vertices[v0].normal;
+                const float d=glm::dot(n,localNegCast);
+                if(d<0.0f) {
+                    const float nlSq=uniformRot?(c0*glm::dot(n,n)):glm::dot(modelRot*n,modelRot*n);
+                    if(nlSq>1e-6f && d*d>=0.25f*nlSq)continue;
+                }
+            }
             Point polygon[12],temp[12];int count=3;
-            polygon[0]={sc.shadowWorld[v0],sc.shadowUv[v0]};
-            polygon[1]={sc.shadowWorld[v1],sc.shadowUv[v1]};
-            polygon[2]={sc.shadowWorld[v2],sc.shadowUv[v2]};
+            polygon[0]={worldPos(v0),sc.shadowUv[v0]};
+            polygon[1]={worldPos(v1),sc.shadowUv[v1]};
+            polygon[2]={worldPos(v2),sc.shadowUv[v2]};
             for(int plane=0;plane<5 && count;++plane) {
                 int next=0;
                 for(int i=0;i<count;++i) {
@@ -901,14 +975,22 @@ class CaneRuntimeGraphics {
                 count=next;std::copy(temp,temp+count,polygon);
             }
             if(count<3)continue;
-            for(int i=1;i+1<count;++i)for(int index:{0,i,i+1}) {
-                const auto& point=polygon[index];Vertex vertex;
-                glm::vec3 towards=info.camPos-point.world;float length=glm::length(towards);
-                glm::vec3 world=point.world+(length>.001f?towards*(.03f/length):glm::vec3(0));
+            Vertex polyVerts[12];
+            for(int vi=0;vi<count;++vi) {
+                const auto& point=polygon[vi];
+                Vertex& vertex=polyVerts[vi];
+                const glm::vec3 towards=info.camPos-point.world;
+                const float lenSq=glm::dot(towards,towards);
+                const glm::vec3 world=point.world+(lenSq>1e-6f?towards*(.03f/std::sqrt(lenSq)):glm::vec3(0));
                 std::memcpy(vertex.position,&world,sizeof vertex.position);
                 vertex.color[0]=vertex.color[1]=vertex.color[2]=0;vertex.color[3]=info.alphaByte;
-                vertex.uv[0]=point.uv.x/point.uv.w;vertex.uv[1]=point.uv.y/point.uv.w;
-                out.push_back(vertex);
+                const float invW=1.0f/point.uv.w;
+                vertex.uv[0]=point.uv.x*invW;vertex.uv[1]=point.uv.y*invW;
+            }
+            for(int i=1;i+1<count;++i) {
+                out.push_back(polyVerts[0]);
+                out.push_back(polyVerts[i]);
+                out.push_back(polyVerts[i+1]);
             }
         }
     }
@@ -950,7 +1032,8 @@ class CaneRuntimeGraphics {
         mainScratch.reserveDefault();
         bool isNew3ds=false;
         APT_CheckNew3DS(&isNew3ds);
-        Result limitRes=APT_SetAppCpuTimeLimit(isNew3ds?50:30);
+        Result limitRes=APT_SetAppCpuTimeLimit(isNew3ds?80:30);
+        if(isNew3ds && R_FAILED(limitRes))limitRes=APT_SetAppCpuTimeLimit(50);
         if(isNew3ds && R_FAILED(limitRes))limitRes=APT_SetAppCpuTimeLimit(30);
         u32 actualLimit=0;
         APT_GetAppCpuTimeLimit(&actualLimit);
@@ -1073,8 +1156,10 @@ class CaneRuntimeGraphics {
     }
 public:
     unsigned packetCount=0,triangleCount=0,hudVertexCount=0,drawCallCount=0;float cpuMs=0,drawCmdMs=0,frameMs=0,gpuMs=0,updateMs=0;
-    void attachBottomConsole(PrintConsole* console) {
+    void attachBottomConsole(PrintConsole* console,const uint32_t* genPtr=nullptr) {
         bottomConsole=console;
+        bottomConsoleGen=genPtr;
+        bottomFbStamps[0]=bottomFbStamps[1]={};
         if(!console || !console->frameBuffer)return;
         bottomConsoleShadow.assign(console->frameBuffer,console->frameBuffer+320*240);
         console->frameBuffer=bottomConsoleShadow.data();
@@ -1152,6 +1237,21 @@ public:
         std::fprintf(stderr,"Texture cache absent: using original textures without startup encoding\n");
         return true;
     }
+    bool evictVramTexturesToBudget(size_t targetBudget) {
+        for(auto& item:textures) {
+            if(vramTextureBytes<=targetBudget)return true;
+            if(!item.loaded || !item.inVram)continue;
+            C3D_Tex replacement=item.tex;
+            replacement.data=linearAlloc(item.tex.size);
+            if(!replacement.data)return false;
+            std::memcpy(replacement.data,item.tex.data,item.tex.size);
+            GSPGPU_FlushDataCache(replacement.data,item.tex.size);
+            const size_t bytes=item.tex.size;
+            C3D_TexDelete(&item.tex);item.tex=replacement;item.inVram=false;
+            --vramTexCount;++fcramTexCount;vramTextureBytes-=bytes;fcramTextureBytes+=bytes;
+        }
+        return vramTextureBytes<=targetBudget;
+    }
     void applyGameplayDisplay(int requested) {
         requested=std::clamp(requested,0,6);
         if(target && displayRequest==requested && gfxIs3D()==(displayMode==2 || displayMode==6) && gfxIsWide()==(displayMode==1))return;
@@ -1161,26 +1261,16 @@ public:
         if(target) {C3D_RenderTargetDetachOutput(target);C3D_RenderTargetDelete(target);target=nullptr;}
         if(rightTarget) {C3D_RenderTargetDetachOutput(rightTarget);C3D_RenderTargetDelete(rightTarget);rightTarget=nullptr;}
         displayRequest=requested;displayMode=requested;
-        if(requested==6) {
-            // Switching into two large eye targets must not fail just because
-            // replaceable world textures already occupy VRAM. Keep texture
-            // objects/pointers stable while moving their storage to FCRAM.
-            for(auto& item:textures)if(item.loaded && item.inVram) {
-                C3D_Tex replacement=item.tex;
-                replacement.data=linearAlloc(item.tex.size);
-                if(!replacement.data)throw std::runtime_error("Stereo texture relocation failed");
-                std::memcpy(replacement.data,item.tex.data,item.tex.size);
-                GSPGPU_FlushDataCache(replacement.data,item.tex.size);
-                const size_t bytes=item.tex.size;
-                C3D_TexDelete(&item.tex);item.tex=replacement;item.inVram=false;
-                --vramTexCount;++fcramTexCount;vramTextureBytes-=bytes;fcramTextureBytes+=bytes;
-            }
-            for(auto& map:shadowMaps) {if(map.target)C3D_RenderTargetDelete(map.target);if(map.texture.data)C3D_TexDelete(&map.texture);map={};}
-        }
         u8 model=CFG_MODEL_3DS;
         if(R_SUCCEEDED(cfguInit())) {CFGU_GetSystemModel(&model);cfguExit();}
         if((requested==1 && !canUseWideMode3ds()) ||
            ((requested==2 || requested==6) && (model==CFG_MODEL_2DS || model==CFG_MODEL_N2DSXL)))displayMode=0;
+        if(displayMode==6 || displayMode==3) {
+            if(!evictVramTexturesToBudget(0))displayMode=(displayMode==6)?2:0;
+            else for(auto& map:shadowMaps) {if(map.target)C3D_RenderTargetDelete(map.target);if(map.texture.data)C3D_TexDelete(&map.texture);map={};}
+        }
+        const size_t wantedVram=vramTextureBudget(displayMode);
+        if(vramTextureBytes>wantedVram)evictVramTexturesToBudget(wantedVram);
         const auto allocatePostTarget=[&]() {
             if(displayMode<3 || displayMode>5)return true;
             const bool ssaa=displayMode==3;
@@ -1199,14 +1289,25 @@ public:
                 if(!rightTarget) {C3D_RenderTargetDelete(target);target=nullptr;return false;}
             }
             if(!allocatePostTarget()) {
+                if(rightTarget) {C3D_RenderTargetDelete(rightTarget);rightTarget=nullptr;}
                 C3D_RenderTargetDelete(target);target=nullptr;return false;
             }
             return true;
         };
         if(!allocate()) {
-            displayMode=(requested==6)?2:0;
-            std::fprintf(stderr,"Display allocation fallback: requested=%d actual=%d\n",requested,displayMode);
-            if(!allocate())throw std::runtime_error("Native render target allocation failed");
+            bool ready=false;
+            if(displayMode==6) {
+                displayMode=2;
+                std::fprintf(stderr,"Display allocation fallback: requested=%d actual=%d\n",requested,displayMode);
+                ready=allocate();
+            }
+            if(!ready) {
+                displayMode=0;
+                evictVramTexturesToBudget(0);
+                for(auto& map:shadowMaps) {if(map.target)C3D_RenderTargetDelete(map.target);if(map.texture.data)C3D_TexDelete(&map.texture);map={};}
+                std::fprintf(stderr,"Display allocation fallback: requested=%d actual=%d\n",requested,displayMode);
+                if(!allocate())throw std::runtime_error("Native render target allocation failed");
+            }
         }
         gfxSetWide(displayMode==1);if(displayMode!=1)gfxSet3D(displayMode==2 || displayMode==6);
         const u32 transfer=GX_TRANSFER_IN_FORMAT(GX_TRANSFER_FMT_RGBA8)|GX_TRANSFER_OUT_FORMAT(GX_TRANSFER_FMT_RGB8)|GX_TRANSFER_SCALING(displayMode==6?GX_TRANSFER_SCALE_X:GX_TRANSFER_SCALE_NO);
@@ -1489,11 +1590,22 @@ public:
                 GX_TRANSFER_IN_FORMAT(GX_TRANSFER_FMT_RGBA8)|GX_TRANSFER_OUT_FORMAT(GX_TRANSFER_FMT_RGB565));
             else C3D_RenderTargetDetachOutput(bottomTarget);
             bottomOutput=caneBottomActive;
+            bottomFbStamps[0]=bottomFbStamps[1]={};
         }
         if(!bottomOutput && bottomConsole && !bottomConsoleShadow.empty()) {
             void* fb=gfxGetFramebuffer(GFX_BOTTOM,GFX_LEFT,nullptr,nullptr);
-            std::memcpy(fb,bottomConsoleShadow.data(),bottomConsoleShadow.size()*sizeof(u16));
-            GSPGPU_FlushDataCache(fb,bottomConsoleShadow.size()*sizeof(u16));
+            const uint32_t gen=bottomConsoleGen?*bottomConsoleGen:0u;
+            const bool upToDate=bottomConsoleGen &&
+                ((bottomFbStamps[0].valid && bottomFbStamps[0].ptr==fb && bottomFbStamps[0].gen==gen) ||
+                 (bottomFbStamps[1].valid && bottomFbStamps[1].ptr==fb && bottomFbStamps[1].gen==gen));
+            if(!upToDate) {
+                std::memcpy(fb,bottomConsoleShadow.data(),bottomConsoleShadow.size()*sizeof(u16));
+                GSPGPU_FlushDataCache(fb,bottomConsoleShadow.size()*sizeof(u16));
+                const int idx=(bottomFbStamps[0].valid && bottomFbStamps[0].ptr==fb)?0
+                             :(bottomFbStamps[1].valid && bottomFbStamps[1].ptr==fb)?1
+                             :(!bottomFbStamps[0].valid?0:1);
+                bottomFbStamps[idx]={fb,gen,true};
+            }
         }
         if(shadowSize!=CaneShadowSize3ds()) {
             C3D_FrameSync();
@@ -1512,11 +1624,7 @@ public:
         frameLights.clear();
         for(LIGHT* light=g_psw->dlLight.plightFirst;light && frameLights.size()<MAX_LIGHTS;light=light->dleLight.plightNext) {
             if(!FIsLoInWorld(light))continue;
-            glm::vec3 dir(0);const bool isDir=(light->lightk==LIGHTK_Direction);
-            if(isDir) {glm::vec3 d=light->xf.matWorld[2];float l=glm::length(d);if(l>.0001f)dir=d/l;}
-            else if(light->lightk==LIGHTK_Frustrum || light->lightk==LIGHTK_Spot) {glm::vec3 d=light->xf.matWorld*light->normalLocal;float l=glm::length(d);if(l>.0001f)dir=d/l;}
-            float r=light->lmFallOffS.gMax;
-            frameLights.push_back({light,dir,light->xf.posWorld,r,r*r,isDir});
+            frameLights.push_back(makePreLight(light));
         }
         if(frame<=2)std::fprintf(stderr,"frame %u: render world\n",frame);
         if(frame<=2)std::fprintf(stderr,"heap used=%d free=%d\n",mallinfo().uordblks,mallinfo().fordblks);
@@ -1560,6 +1668,7 @@ public:
         CaneWipeNative();
         if(g_autosave.pfont)DrawAutoSave(&g_autosave);
         if(caneBottomActive)CaneBottomStatusNative();
+        trophies::Draw();
         CanePrepareBottomHud();
         pk[2]=svcGetSystemTick();
         C3D_Mtx projectionMatrix,view,combined;
@@ -1612,7 +1721,14 @@ public:
                     if(pixels<48.f) {minLinePixels=.75f;++outlineLodReduced;}
                 }
             }
-            auto& cache=celCaches[packet.pglob];
+            uint32_t* celSlot=celCacheMap.find(packet.pglob);
+            if(!celSlot) {
+                const uint32_t newIdx=uint32_t(celCachePool.size());
+                celCachePool.emplace_back();
+                celCacheMap[packet.pglob]=newIdx;
+                celSlot=celCacheMap.find(packet.pglob);
+            }
+            auto& cache=celCachePool[*celSlot];
             if(cache.source!=glob.edgePoints.data() || cache.count!=glob.edgePoints.size() || cache.vao!=glob.VAO) {
                 cache={};cache.source=glob.edgePoints.data();cache.count=glob.edgePoints.size();cache.vao=glob.VAO;
                 cache.indices.resize(cache.count);
@@ -1634,16 +1750,19 @@ public:
         animJobs.clear();allBoneNormMats.clear();
         hudDraws.clear();hudDraws.reserve(caneHud.size());hudJobs.clear();
         size_t wave1Used=0;
+        packetGcIdx.assign(canePackets.size(),~0u);
         for(size_t pi=0;pi<canePackets.size();++pi) {
             const auto& packet=canePackets[pi];
             const auto& glob=*packet.pglob;const auto& asubs=glob.asubglob;
             if(asubs.empty())continue;
             float cachedScale=-1.0f;
             uint32_t packetBoneOff=0,packetBoneCount=0;bool packetBonesBuilt=false;
+            bool anyStaticSub=false;
             for(size_t si=0;si<asubs.size();++si) {
                 const auto& sub=asubs[si];
                 size_t vertCount=sub.vertices.size(),idxCount=sub.indices.size()*3;
-                if(!vertCount || !idxCount || !animated(packet,sub))continue;
+                if(!vertCount || !idxCount)continue;
+                if(!animated(packet,sub)) {anyStaticSub=true;continue;}
                 if(cachedScale<0.0f) {
                     const glm::mat3 r(packet.model);
                     cachedScale=std::max({glm::length(r[0]),glm::length(r[1]),glm::length(r[2])});
@@ -1665,8 +1784,23 @@ public:
                     bOff=packetBoneOff;bCnt=packetBoneCount;
                 }
                 wave1Used=(wave1Used+3u)&~3u;
-                animJobs.push_back({uint32_t(pi),uint32_t(si),uint32_t(wave1Used),bOff,bCnt,cachedScale,0,-1,-1,-1});
+                animJobs.push_back({uint32_t(pi),uint32_t(si),uint32_t(wave1Used),bOff,bCnt,cachedScale,0,false,-1,-1,-1});
                 wave1Used+=vertCount;
+            }
+            if(anyStaticSub) {
+                const GlobKey gk{&glob,packet.palo};
+                uint32_t gcIdx;
+                if(uint32_t* gcSlot=globCacheMap.find(gk)) {
+                    gcIdx=*gcSlot;
+                } else {
+                    if(!globCacheFree.empty()) {gcIdx=globCacheFree.back();globCacheFree.pop_back();}
+                    else {gcIdx=uint32_t(globCachePool.size());globCachePool.emplace_back();}
+                    globCacheMap[gk]=gcIdx;
+                }
+                packetGcIdx[pi]=gcIdx;
+                auto& gc=globCachePool[gcIdx];
+                if(gc.seenFrame==frame)gc.instanced=true;
+                else gc.seenFrame=frame;
             }
         }
         for(const auto& hud:caneHud) {
@@ -1687,7 +1821,8 @@ public:
         size_t animCursor=0;
         animDrawSlots.clear();animDrawSlots.reserve(animJobs.size());
         unsigned animFlattens=0,movedFlattens=0,newFlattens=0,totalDraws=0,threeWayCount=0;tkAnim=tkMoved=0;
-        for(const auto& packet:canePackets) {
+        for(size_t pi=0;pi<canePackets.size();++pi) {
+            const auto& packet=canePackets[pi];
             const auto& glob=*packet.pglob;
             const auto& asubs=glob.asubglob;
             if(asubs.empty())continue;
@@ -1715,46 +1850,47 @@ public:
                     packetCasterIdx=int(m);break;
                 }
             }
-            bool anyStaticSub=false;
-            for(const auto& sub:asubs)if(!animated(packet,sub)) {anyStaticSub=true;break;}
-            GlobCache* gcPtr=nullptr;
+            const uint32_t gcIdx=packetGcIdx[pi];
+            GlobCache* gcPtr=(gcIdx!=~0u)?&globCachePool[gcIdx]:nullptr;
             bool needStaticMoveCheck=false,shouldReshadeMoved=false;
             int flipFlag=-1;
             auto isFlipped=[&]() {
                 if(flipFlag<0)flipFlag=(glm::determinant(glm::mat3(packet.model))<0.0f)?1:0;
                 return flipFlag!=0;
             };
-            if(anyStaticSub) {
-                gcPtr=&globCaches[{&glob,packet.palo}];
+            if(gcPtr) {
                 auto& gc=*gcPtr;
+                const bool reusedThisFrame=(gc.used==frame);
                 if(gc.vao!=glob.VAO || gc.subs.size()!=asubs.size()) {
+                    const bool wasInstanced=gc.instanced;
                     for(auto& sc:gc.subs)if(sc.localVerts) {C3D_FrameSync();linearFree(sc.localVerts);meshBytes-=sc.count*sizeof(Vertex);}
                     gc=GlobCache{};gc.vao=glob.VAO;gc.model=packet.model;gc.flipped=isFlipped();gc.subs.resize(asubs.size());
-                } else {
+                    gc.seenFrame=frame;gc.instanced=wasInstanced;gc.moved=wasInstanced;
+                } else if(!reusedThisFrame) {
                     bool badSource=false;
                     for(size_t si=0;si<asubs.size();++si) {
                         const auto& sc=gc.subs[si];const auto& sub=asubs[si];
                         if(sc.source && (sc.source!=sub.vertices.data() || sc.count!=sub.vertices.size())) {badSource=true;break;}
                     }
                     if(badSource) {
+                        const bool wasInstanced=gc.instanced;
                         for(auto& sc:gc.subs)if(sc.localVerts) {C3D_FrameSync();linearFree(sc.localVerts);meshBytes-=sc.count*sizeof(Vertex);}
                         gc=GlobCache{};gc.vao=glob.VAO;gc.model=packet.model;gc.flipped=isFlipped();gc.subs.resize(asubs.size());
-                    } else if(std::memcmp(&gc.model,&packet.model,sizeof(glm::mat4))!=0) {
-                        if(gc.anyWorldBaked) {
-                            gc.anyWorldBaked=false;gc.moved=true;gc.flipped=isFlipped();gc.model=packet.model;
-                            for(auto& sc:gc.subs) {
-                                sc.worldChunk=-1;sc.worldBase=0;std::vector<uint16_t>().swap(sc.worldIndices);
-                                sc.localIndices=nullptr;sc.localIndexCount=0;sc.texValid=false;sc.tex0=nullptr;
-                            }
-                        } else {
-                            gc.flipped=isFlipped();needStaticMoveCheck=true;
-                            glm::vec3 d=glm::vec3(packet.model[3])-glm::vec3(gc.model[3]);
-                            shouldReshadeMoved=(glm::dot(d,d)>4096.0f || (((uintptr_t(&glob)*2654435761u)>>27)==(frame&31)));
-                            if(!shouldReshadeMoved) {
-                                bool anyThreeWay=false;
-                                for(const auto& sub:asubs)if(sub.pshd && sub.pshd->shdk==SHDK_ThreeWay) {anyThreeWay=true;break;}
-                                if(!anyThreeWay)gc.model=packet.model;
-                            }
+                        gc.seenFrame=frame;gc.instanced=wasInstanced;gc.moved=wasInstanced;
+                    } else if(gc.anyWorldBaked && (gc.instanced || std::memcmp(&gc.model,&packet.model,sizeof(glm::mat4))!=0)) {
+                        gc.anyWorldBaked=false;gc.moved=true;gc.flipped=isFlipped();gc.model=packet.model;
+                        for(auto& sc:gc.subs) {
+                            sc.worldChunk=-1;sc.worldBase=0;std::vector<uint16_t>().swap(sc.worldIndices);
+                            sc.localIndices=nullptr;sc.localIndexCount=0;sc.texValid=false;sc.tex0=nullptr;
+                        }
+                    } else if(!gc.anyWorldBaked && std::memcmp(&gc.model,&packet.model,sizeof(glm::mat4))!=0) {
+                        gc.flipped=isFlipped();needStaticMoveCheck=true;
+                        glm::vec3 d=glm::vec3(packet.model[3])-glm::vec3(gc.model[3]);
+                        shouldReshadeMoved=(glm::dot(d,d)>4096.0f || (((uintptr_t(&glob)*2654435761u)>>27)==(frame&31)));
+                        if(!shouldReshadeMoved) {
+                            bool anyThreeWay=false;
+                            for(const auto& sub:asubs)if(sub.pshd && sub.pshd->shdk==SHDK_ThreeWay) {anyThreeWay=true;break;}
+                            if(!anyThreeWay)gc.model=packet.model;
                         }
                     } else {
                         flipFlag=gc.flipped?1:0;
@@ -1779,7 +1915,7 @@ public:
                     vertices=dyn;
                     if(packetCasterIdx>=0)casterDynVerts[packetCasterIdx].push_back({&sub,dyn});
                     const auto& ib=indexBufferFor(sub,glob.VAO);
-                    Draw d{vertices,ib.data,ib.count,nullptr,nullptr,nullptr,0,false,isFlipped(),&packet,packet.rp,packet.z,sub.pshd,&sub};
+                    Draw d{vertices,ib.data,ib.count,nullptr,nullptr,nullptr,0,false,isFlipped(),false,&packet,packet.rp,packet.z,sub.pshd,&sub};
                     if(packet.tv) {
                         animDrawSlots.push_back({uint32_t(tvDraws.size()),0,true});
                         tvDraws.push_back(d);
@@ -1793,13 +1929,13 @@ public:
                     auto& gc=*gcPtr;
                     auto& sc=gc.subs[si];
                     scPtr=&sc;
-                    const bool wantWorldBake=!packet.dynamic && !packet.tv && isBatchablePhase && !gc.moved && sc.localVerts==nullptr;
+                    const bool wantWorldBake=!packet.dynamic && !packet.tv && isBatchablePhase && !gc.moved && !gc.instanced && sc.localVerts==nullptr;
                     if(sc.worldChunk<0 && !sc.localVerts) {
                         int i0=-1,i1=-1,i2=-1;
                         int chunkIdx=-1;unsigned base=0;
                         if(wantWorldBake && allocWorldChunk(vertCount,chunkIdx,base)) {
                             WorldChunk& wc=worldChunks[chunkIdx];
-                            flatten(mainScratch,wc.vertices+base,packet,sub,false,true,true,getScale(),nullptr,0,&sc.texMode,&i0,&i1,&i2);
+                            flatten(mainScratch,wc.vertices+base,packet,sub,false,true,true,getScale(),nullptr,0,&sc.texMode,&i0,&i1,&i2,&sc.hasSoftAlpha);
                             wc.dirtyMin=std::min(wc.dirtyMin,base);
                             wc.dirtyMax=std::max(wc.dirtyMax,base+unsigned(vertCount));
                             sc.worldChunk=chunkIdx;sc.worldBase=base;sc.source=sub.vertices.data();sc.count=vertCount;
@@ -1822,7 +1958,7 @@ public:
                             sc.localVerts=static_cast<Vertex*>(linearAlloc(bytes));
                             if(!sc.localVerts)throw std::runtime_error("Native static mesh allocation failed");
                             sc.count=vertCount;sc.source=sub.vertices.data();meshBytes+=bytes;
-                            flatten(mainScratch,sc.localVerts,packet,sub,false,false,true,getScale(),nullptr,0,&sc.texMode,&i0,&i1,&i2);
+                            flatten(mainScratch,sc.localVerts,packet,sub,false,false,true,getScale(),nullptr,0,&sc.texMode,&i0,&i1,&i2,&sc.hasSoftAlpha);
                             GSPGPU_FlushDataCache(sc.localVerts,bytes);++newFlattens;
                         }
                         sc.id0=int16_t(i0);sc.id1=int16_t(i1);sc.id2=int16_t(i2);
@@ -1839,7 +1975,7 @@ public:
                     } else {
                         if(needStaticMoveCheck && shouldReshadeMoved && sub.pshd && sub.pshd->shdk==SHDK_ThreeWay) {
                             int i0=-1,i1=-1,i2=-1;
-                            {u64 k0=svcGetSystemTick();flatten(mainScratch,sc.localVerts,packet,sub,false,false,true,getScale(),nullptr,0,&sc.texMode,&i0,&i1,&i2);tkMoved+=svcGetSystemTick()-k0;}
+                            {u64 k0=svcGetSystemTick();flatten(mainScratch,sc.localVerts,packet,sub,false,false,true,getScale(),nullptr,0,&sc.texMode,&i0,&i1,&i2,&sc.hasSoftAlpha);tkMoved+=svcGetSystemTick()-k0;}
                             GSPGPU_FlushDataCache(sc.localVerts,vertCount*sizeof(Vertex));
                             sc.id0=int16_t(i0);sc.id1=int16_t(i1);sc.id2=int16_t(i2);sc.tex0=nullptr;
                             ++movedFlattens;
@@ -1855,11 +1991,15 @@ public:
                     if(sc.worldChunk>=0) {
                         subWorldBaked=true;
                         vertices=worldChunks[sc.worldChunk].vertices+sc.worldBase;
-                        if((packet.rp==RP_Opaque || packet.rp==RP_OpaqueAfterProjVolume) && packet.darken>=0.999f && packet.alpha>=0.999f) {
+                        const bool isOpaquePhase=(packet.rp==RP_Opaque || packet.rp==RP_OpaqueAfterProjVolume);
+                        const bool isCutoutPhase=(packet.rp==RP_Cutout || packet.rp==RP_CutoutAfterProjVolume);
+                        const C3D_Tex* alphaTex=(texMode>=1)?t1:t0;
+                        const bool batchableCutout=isCutoutPhase && packet.pglob->fTransluscentSort && !sc.hasSoftAlpha && isBinaryAlphaTex(alphaTex);
+                        if((isOpaquePhase || batchableCutout) && packet.darken>=0.999f && packet.alpha>=0.999f) {
                             staticBatches[packet.rp].push_back({sc.worldIndices.data(),unsigned(sc.worldIndices.size()),sc.worldChunk,texMode,t0,t1,t2});
                             totalBatchIndices+=sc.worldIndices.size();
                         } else {
-                            fadedWorldDraws.push_back({sc.worldIndices.data(),unsigned(sc.worldIndices.size()),worldChunks[sc.worldChunk].vertices,texMode,t0,t1,t2,&packet,packet.rp,&sub});
+                            fadedWorldDraws.push_back({sc.worldIndices.data(),unsigned(sc.worldIndices.size()),worldChunks[sc.worldChunk].vertices,texMode,t0,t1,t2,&packet,packet.rp,&sub,sc.hasSoftAlpha});
                             totalBatchIndices+=sc.worldIndices.size();
                         }
                         triangleCount+=unsigned(sc.worldIndices.size())/3;++totalDraws;
@@ -1870,7 +2010,7 @@ public:
                             const auto& ib=indexBufferFor(sub,glob.VAO);
                             sc.localIndices=ib.data;sc.localIndexCount=ib.count;
                         }
-                        Draw d{vertices,sc.localIndices,sc.localIndexCount,t0,t1,t2,texMode,false,isFlipped(),&packet,packet.rp,packet.z,sub.pshd,&sub};
+                        Draw d{vertices,sc.localIndices,sc.localIndexCount,t0,t1,t2,texMode,false,isFlipped(),sc.hasSoftAlpha,&packet,packet.rp,packet.z,sub.pshd,&sub};
                         if(packet.tv)tvDraws.push_back(d);
                         else phaseBuckets[std::min(unsigned(packet.rp),unsigned(RP_Max-1))].push_back(d);
                         triangleCount+=sc.localIndexCount/3;++totalDraws;
@@ -1933,7 +2073,7 @@ public:
             unsigned off=unsigned(batchUsed);
             std::memcpy(batchIndices[slot]+off,fw.src,fw.count*sizeof(uint16_t));
             batchUsed+=fw.count;
-            phaseBuckets[fw.phase].push_back({fw.chunkVerts,batchIndices[slot]+off,fw.count,fw.tex0,fw.tex1,fw.tex2,fw.texMode,true,false,fw.material,fw.phase,fw.material->z,fw.sub->pshd,fw.sub});
+            phaseBuckets[fw.phase].push_back({fw.chunkVerts,batchIndices[slot]+off,fw.count,fw.tex0,fw.tex1,fw.tex2,fw.texMode,true,false,fw.hasSoftAlpha,fw.material,fw.phase,fw.material->z,fw.sub->pshd,fw.sub});
         }
         unsigned particles=0;
         auto curve=[](const CLQ& q,float t) {return q.g0+t*(q.g1+t*q.g2);};
@@ -1981,7 +2121,8 @@ public:
                     }
                     bool additive=(group.pshd->grfshd&1)!=0;
                     if(particleDraws.empty() || particleDraws.back().tex!=pt || particleDraws.back().additive!=additive)
-                        particleDraws.push_back({unsigned(used),0,pt,additive});
+                        particleDraws.push_back({unsigned(used),0,pt,additive,0});
+                    if(pcol[3]>particleDraws.back().maxAlpha)particleDraws.back().maxAlpha=pcol[3];
                     const float corners[6][2]={{-1,-1},{1,-1},{-1,1},{-1,1},{1,-1},{1,1}};
                     for(const auto& c:corners) {
                         auto& out=dynamic[slot][used++];glm::vec3 point=center+horizontal*c[0]+vertical*c[1];
@@ -1999,7 +2140,7 @@ public:
             const auto& job=animJobs[i];
             const auto& slotRef=animDrawSlots[i];
             Draw& d=slotRef.isTv?tvDraws[slotRef.drawIdx]:phaseBuckets[slotRef.bucket][slotRef.drawIdx];
-            d.texMode=job.texMode;
+            d.texMode=job.texMode;d.hasSoftAlpha=job.hasSoftAlpha;
             if(job.texMode==0) {d.tex0=texture(job.i0);}
             else if(job.texMode==1) {d.tex1=texture(job.i1);d.tex0=(job.i0==job.i1?d.tex1:texture(job.i0,false,false,64));}
             else {d.tex1=texture(job.i1);d.tex0=(job.i0==job.i1?d.tex1:texture(job.i0,false,false,64));d.tex2=(job.i2==job.i1?d.tex1:(job.i2==job.i0?d.tex0:texture(job.i2,false,false,64)));}
@@ -2164,12 +2305,16 @@ public:
         if(used)GSPGPU_FlushDataCache(dynamic[slot],used*sizeof(Vertex));
         // Retire local caches for objects no longer submitted, without retaining game pointers.
         if(frame%60==0) {
-            for(auto it=globCaches.begin();it!=globCaches.end();) {
-                if(!it->second.anyWorldBaked && frame-it->second.used>120) {
-                    for(auto& sc:it->second.subs)if(sc.localVerts) {meshBytes-=sc.count*sizeof(Vertex);linearFree(sc.localVerts);}
-                    it=globCaches.erase(it);
-                } else ++it;
-            }
+            globCacheMap.eraseIf([&](const GlobKey&,uint32_t idx) {
+                GlobCache& gc=globCachePool[idx];
+                if(!gc.anyWorldBaked && frame-gc.used>120) {
+                    for(auto& sc:gc.subs)if(sc.localVerts) {meshBytes-=sc.count*sizeof(Vertex);linearFree(sc.localVerts);}
+                    gc=GlobCache{};
+                    globCacheFree.push_back(idx);
+                    return true;
+                }
+                return false;
+            });
         }
         auto& transBucket=phaseBuckets[RP_Translucent];
         if(transBucket.size()>1)std::stable_sort(transBucket.begin(),transBucket.end(),[](const Draw& a,const Draw& b) {
@@ -2213,6 +2358,8 @@ public:
         // targets. The physical slider selects visible stereo; it must not
         // reconfigure gfx while a Citro3D frame is being submitted.
         const float stereoReference=CaneStereoOption3ds(2) && g_pjt?glm::distance(g_pcm->pos,g_pjt->xf.posWorld):g_pcm->sNearClip*12;
+        packetMvps.resize(canePackets.size());
+        packetMvpValid.assign(canePackets.size(),0);
         for(int eyeIndex=0;eyeIndex<(stereoActive?2:1);++eyeIndex) {
         C3D_RenderTarget* eyeTarget=postTarget?postTarget:(eyeIndex?rightTarget:target);
         C3D_RenderTargetClear(eyeTarget,C3D_CLEAR_ALL,skyClear,0);C3D_FrameDrawOn(eyeTarget);
@@ -2294,8 +2441,19 @@ public:
                 if(draw.worldBaked) {
                     C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER,projection,&camera);
                 } else {
-                    C3D_Mtx model=matrix(draw.material->model),mvp;Mtx_Multiply(&mvp,&camera,&model);
-                    C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER,projection,&mvp);
+                    const uintptr_t matAddr=uintptr_t(draw.material),baseAddr=uintptr_t(canePackets.data());
+                    const size_t idx=(matAddr>=baseAddr && (matAddr-baseAddr)%sizeof(CanePacket)==0)?size_t((matAddr-baseAddr)/sizeof(CanePacket)):size_t(-1);
+                    if(&camera==&combined && idx<packetMvps.size()) {
+                        if(!packetMvpValid[idx]) {
+                            C3D_Mtx model=matrix(draw.material->model);
+                            Mtx_Multiply(&packetMvps[idx],&combined,&model);
+                            packetMvpValid[idx]=1;
+                        }
+                        C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER,projection,&packetMvps[idx]);
+                    } else {
+                        C3D_Mtx model=matrix(draw.material->model),mvp;Mtx_Multiply(&mvp,&camera,&model);
+                        C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER,projection,&mvp);
+                    }
                 }
                 float darken=std::clamp(draw.material->darken,0.0f,1.0f);
                 setTint(darken,darken,darken,std::clamp(draw.material->alpha,0.0f,1.0f));
@@ -2357,8 +2515,9 @@ public:
             setTexMode(draw.texMode);
             C3D_Tex* bt0=draw.tex0?draw.tex0:&white;
             if(bt0!=lastTex0) {C3D_TexBind(0,bt0);lastTex0=bt0;}
+            C3D_Tex* bt1=lastTex1;
             if(draw.texMode>=1) {
-                C3D_Tex* bt1=draw.tex1?draw.tex1:&white;
+                bt1=draw.tex1?draw.tex1:&white;
                 if(bt1!=lastTex1) {C3D_TexBind(1,bt1);lastTex1=bt1;}
             }
             if(draw.texMode==2) {
@@ -2372,16 +2531,29 @@ public:
                 // solid alpha writes depth; the soft fringe never writes it.
                 const unsigned flags=draw.shader?draw.shader->grfshd:2;
                 const bool additive=translucent?(flags!=2 && flags!=6):!draw.material->pglob->fTransluscentSort;
-                C3D_AlphaBlend(GPU_BLEND_ADD,GPU_BLEND_ADD,GPU_SRC_ALPHA,additive?GPU_ONE:GPU_ONE_MINUS_SRC_ALPHA,GPU_ONE,GPU_ZERO);
-                C3D_DepthTest(true,GPU_GREATER,GPU_WRITE_ALL);
-                C3D_AlphaTest(true,GPU_GEQUAL,230);
-                C3D_DrawElements(GPU_TRIANGLES,draw.count,C3D_UNSIGNED_SHORT,draw.indices);++drawCalls;
-                C3D_DepthTest(true,GPU_GREATER,GPU_WRITE_COLOR);
-                C3D_AlphaTest(true,GPU_GREATER,0);
-                C3D_DrawElements(GPU_TRIANGLES,draw.count,C3D_UNSIGNED_SHORT,draw.indices);++drawCalls;
-                C3D_AlphaBlend(GPU_BLEND_ADD,GPU_BLEND_ADD,GPU_SRC_ALPHA,GPU_ONE_MINUS_SRC_ALPHA,GPU_ONE,GPU_ZERO);
-                C3D_AlphaTest(true,GPU_GREATER,24);
-                lastDepthWrite=0;
+                const C3D_Tex* alphaTex=(draw.texMode>=1)?bt1:bt0;
+                const bool binaryCutout=cutout && !additive && !draw.hasSoftAlpha &&
+                    draw.material->alpha>=0.999f && isBinaryAlphaTex(alphaTex);
+                if(binaryCutout) {
+                    C3D_AlphaTest(true,GPU_GEQUAL,128);
+                    C3D_DrawElements(GPU_TRIANGLES,draw.count,C3D_UNSIGNED_SHORT,draw.indices);++drawCalls;
+                    C3D_AlphaTest(true,GPU_GREATER,24);
+                } else {
+                    C3D_AlphaBlend(GPU_BLEND_ADD,GPU_BLEND_ADD,GPU_SRC_ALPHA,additive?GPU_ONE:GPU_ONE_MINUS_SRC_ALPHA,GPU_ONE,GPU_ZERO);
+                    if(draw.material->alpha>=0.89f) {
+                        C3D_DepthTest(true,GPU_GREATER,GPU_WRITE_ALL);
+                        C3D_AlphaTest(true,GPU_GEQUAL,230);
+                        C3D_DrawElements(GPU_TRIANGLES,draw.count,C3D_UNSIGNED_SHORT,draw.indices);++drawCalls;
+                        C3D_DepthTest(true,GPU_GREATER,GPU_WRITE_COLOR);
+                    } else if(lastDepthWrite!=0) {
+                        C3D_DepthTest(true,GPU_GREATER,GPU_WRITE_COLOR);
+                    }
+                    C3D_AlphaTest(true,GPU_GREATER,0);
+                    C3D_DrawElements(GPU_TRIANGLES,draw.count,C3D_UNSIGNED_SHORT,draw.indices);++drawCalls;
+                    C3D_AlphaBlend(GPU_BLEND_ADD,GPU_BLEND_ADD,GPU_SRC_ALPHA,GPU_ONE_MINUS_SRC_ALPHA,GPU_ONE,GPU_ZERO);
+                    C3D_AlphaTest(true,GPU_GREATER,24);
+                    lastDepthWrite=0;
+                }
             } else {
                 C3D_DrawElements(GPU_TRIANGLES,draw.count,C3D_UNSIGNED_SHORT,draw.indices);++drawCalls;
             }
@@ -2395,6 +2567,8 @@ public:
             if(rp==RP_WorldMap)continue;
             if(!mergedDraws[rp].empty()) {
                 if(lastDepthWrite!=1) {C3D_DepthTest(true,GPU_GREATER,GPU_WRITE_ALL);lastDepthWrite=1;}
+                const bool cutoutBatch=(rp==RP_Cutout || rp==RP_CutoutAfterProjVolume);
+                if(cutoutBatch)C3D_AlphaTest(true,GPU_GEQUAL,128);
                 C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER,projection,&combined);
                 setTint(1,1,1,1);
                 lastMaterial=nullptr;lastCamera=nullptr;lastWorldBaked=false;
@@ -2419,6 +2593,7 @@ public:
                     C3D_DrawElements(GPU_TRIANGLES,md.indexCount,C3D_UNSIGNED_SHORT,batchIndices[slot]+md.indexOffset);
                     ++drawCalls;++mergedCallCount;
                 }
+                if(cutoutBatch)C3D_AlphaTest(true,GPU_GREATER,24);
             }
             if(!phaseBuckets[rp].empty())
                 for(const auto& draw:phaseBuckets[rp])drawMesh(draw,combined);
@@ -2450,7 +2625,7 @@ public:
                 C3D_DepthTest(true,GPU_GREATER,GPU_WRITE_COLOR);
                 C3D_AlphaTest(true,GPU_GREATER,0);
                 C3D_DrawArrays(GPU_TRIANGLES,batch.first,batch.count);
-            } else {
+            } else if(batch.maxAlpha>=128) {
                 // BLIP alpha passes use 128/255, unlike mesh cutouts (0.9).
                 // The complementary tests avoid drawing smoke twice.
                 C3D_DepthTest(true,GPU_GREATER,GPU_WRITE_ALL);
@@ -2458,6 +2633,10 @@ public:
                 C3D_DrawArrays(GPU_TRIANGLES,batch.first,batch.count);
                 C3D_DepthTest(true,GPU_GREATER,GPU_WRITE_COLOR);
                 C3D_AlphaTest(true,GPU_LESS,128);
+                C3D_DrawArrays(GPU_TRIANGLES,batch.first,batch.count);
+            } else {
+                C3D_DepthTest(true,GPU_GREATER,GPU_WRITE_COLOR);
+                C3D_AlphaTest(true,GPU_GREATER,0);
                 C3D_DrawArrays(GPU_TRIANGLES,batch.first,batch.count);
             }
         }
@@ -2597,7 +2776,7 @@ public:
         u64 tDrawEnd=osGetTime();
         C3D_FrameEnd(0);u64 tEnd=osGetTime();frameMs=float(tEnd-begin);gpuMs=C3D_GetDrawingTime();drawCmdMs=C3D_GetProcessingTime();drawCallCount=drawCalls;
         if(frame%120==0)std::fprintf(stderr,"Texture memory: vram=%lu/%luKiB linear=%luKiB ETC1=%u saved=%luKiB targets=%dKiB shadows=%uKiB\n",
-            (unsigned long)(vramTextureBytes/1024),(unsigned long)(kVramTextureBudget/1024),(unsigned long)(fcramTextureBytes/1024),etcTexCount,(unsigned long)(textureSavedBytes/1024),displayMode==0?750:1500,unsigned(std::count_if(std::begin(shadowMaps),std::end(shadowMaps),[](const ShadowMap& map){return map.texture.data!=nullptr;}))*shadowSize*shadowSize*6/1024);
+            (unsigned long)(vramTextureBytes/1024),(unsigned long)(vramTextureBudget(displayMode)/1024),(unsigned long)(fcramTextureBytes/1024),etcTexCount,(unsigned long)(textureSavedBytes/1024),displayMode==0?750:displayMode==3?3822:displayMode==6?3000:1500,unsigned(std::count_if(std::begin(shadowMaps),std::end(shadowMaps),[](const ShadowMap& map){return map.texture.data!=nullptr;}))*shadowSize*shadowSize*6/1024);
         if(frame%120==0)std::fprintf(stderr,"Profile ms: upd=%.1f sw=%lu prep=%lu begin=%lu draw=%lu end=%lu dynVerts=%lu draws=%u merged=%u calls=%u flat=%u/%u/%u | ui=%.1f blots=%.1f setup=%.1f w1=%.1f shset=%.1f w2=%.1f fin=%.1f wk=[%u:%.1f,%u:%.1f] vram=%u/%u\n",double(updateMs),(unsigned long)(tSw-t0),(unsigned long)(tMesh-tSw),(unsigned long)(tBegin-tMesh),(unsigned long)(tDrawEnd-tBegin),(unsigned long)(tEnd-tDrawEnd),(unsigned long)used,totalDraws,mergedCallCount,drawCalls,animFlattens,movedFlattens,newFlattens,double(pk[1]-pk[0])/268111.856,double(pk[2]-pk[1])/268111.856,double(pk[3]-pk[2])/268111.856,double(pk[4]-pk[3])/268111.856,double(pk[5]-pk[4])/268111.856,double(pk[6]-pk[5])/268111.856,double(pk[7]-pk[6])/268111.856,workerCount>0?workers[0].jobsDone:0u,workerCount>0?double(workers[0].busyTicks)/268111.856:0.0,workerCount>1?workers[1].jobsDone:0u,workerCount>1?double(workers[1].busyTicks)/268111.856:0.0,vramTexCount,vramTexCount+fcramTexCount);
         return packetCount;
     }
@@ -2609,11 +2788,12 @@ public:
         C3D_FrameSync();
         for(auto& wc:worldChunks)if(wc.vertices)linearFree(wc.vertices);
         worldChunks.clear();worldChunks.shrink_to_fit();
-        for(auto& item:globCaches)for(auto& sc:item.second.subs)if(sc.localVerts)linearFree(sc.localVerts);
-        for(auto& item:indexBuffers)if(item.second.data)linearFree(item.second.data);
-        globCaches.clear();globCaches.rehash(0);
-        indexBuffers.clear();indexBuffers.rehash(0);
-        celCaches.clear();celCaches.rehash(0);
+        for(auto& gc:globCachePool)for(auto& sc:gc.subs)if(sc.localVerts)linearFree(sc.localVerts);
+        indexBuffers.forEach([](const SUBGLOB*,IndexBuf& buf) {if(buf.data)linearFree(buf.data);});
+        globCachePool.clear();globCacheFree.clear();std::vector<uint32_t>().swap(globCacheFree);
+        globCacheMap.clear(true);
+        indexBuffers.clear(true);
+        celCachePool.clear();celCacheMap.clear(true);
         meshBytes=0;vramTexCount=0;fcramTexCount=0;etcTexCount=0;vramTextureBytes=fcramTextureBytes=textureSavedBytes=0;
         C3D_TexBind(0,&white);C3D_TexBind(1,&white);C3D_TexBind(2,&white);
         for(auto& item:textures)if(item.loaded)C3D_TexDelete(&item.tex);
@@ -2621,7 +2801,7 @@ public:
         for(auto& map:shadowMaps) {if(map.target)C3D_RenderTargetDelete(map.target);if(map.texture.data)C3D_TexDelete(&map.texture);map={};}
         textures.clear();textures.shrink_to_fit();
         preparedImages.clear();preparedImages.shrink_to_fit();
-        glTexToImage.clear();glTexToImage.rehash(0);
+        glTexToImage.clear(true);
         for(int i=0;i<RP_Max;++i) {phaseBuckets[i].clear();staticBatches[i].clear();mergedDraws[i].clear();}
         for(auto& cv:casterDynVerts)cv.clear();
         tvDraws.clear();fadedWorldDraws.clear();shadowReceivers.clear();

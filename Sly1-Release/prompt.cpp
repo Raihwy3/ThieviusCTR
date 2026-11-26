@@ -1,4 +1,8 @@
 #include "prompt.h"
+#include "trophies.h"
+static int s_trophyDetail=0;
+static bool s_trophyResetFailed=false;
+namespace trophies { bool Reset(); void DrawMenuBody(PROMPT*,float,float,float,float,float); }
 #include "ui.h"
 #include "dialog.h"
 #include "wm.h"
@@ -24,6 +28,8 @@
 #include <vector>
 
 #ifdef __3DS__
+extern bool CaneTrophyPopups3ds();
+extern void CaneToggleTrophyPopups3ds();
 extern bool CaneUseNewButtons3ds();
 extern void CaneSetNewButtons3ds(bool);
 extern void CaneSetDialogueSkip3ds(bool);
@@ -79,6 +85,9 @@ static constexpr RESPK RESPK_CameraInvertX=RESPK_DisableControllerWhenUnfocused;
 static constexpr RESPK RESPK_CameraInvertY=RESPK_MouseSensitivity;
 static constexpr RESPK RESPK_BinocInvertX=RESPK_ControllerDeadzone;
 static constexpr RESPK RESPK_BinocInvertY=RESPK_AutoIconify;
+// The native port has fixed mappings; this otherwise hidden response slot
+// is available for the trophy notification toggle.
+static constexpr RESPK RESPK_TrophyPopups=RESPK_ResetMappings;
 #endif
 namespace
 {
@@ -283,6 +292,24 @@ bool FMappingPrompt(PRK prk)
 static PRD& OriginalPromptDescriptor(PRK prk)
 {
 #ifdef __3DS__
+    if(prk==PRK_DebugMenu) {
+        static RESPK entries[]={RESPK_ResetTrophies,RESPK_TrophyPopups,RESPK_Back};
+        static PRD debug={"Debug",1.0f,1.0f,1,3,entries};return debug;
+    }
+    if(prk==PRK_ResetTrophiesConfirm) {
+        static RESPK choices[]={RESPK_No,RESPK_Yes};
+        static PRD confirm={"Reset all trophies?",1.0f,1.0f,0,2,choices};return confirm;
+    }
+#endif
+    if(prk==PRK_Trophies) {
+        static RESPK responses[trophies::Count+1];
+        for(int i=0;i<trophies::Count;++i)responses[i]=static_cast<RESPK>(RESPK_TrophyFirst+i);
+        responses[trophies::Count]=RESPK_Back;
+        static PRD menu={nullptr,1.0f,0.85f,1,trophies::Count+1,responses};
+        return menu;
+    }
+
+#ifdef __3DS__
     // The desktop video page is the native Interface submenu; fixed display
     // settings are not exposed as unusable PC controls.
     static RESPK interfaceResponses[]={RESPK_ButtonIcons,RESPK_Video,RESPK_NativeStereo,RESPK_NativeShadows,RESPK_Msaa,RESPK_WindowMode,RESPK_Back};
@@ -388,6 +415,10 @@ PRD& PrdPrompt(PRK prk)
 
 const char* PchzPromptTitle(PRK prk, const PRD& prd)
 {
+    if(prk==PRK_DebugMenu && s_trophyResetFailed)return "Could not reset trophies.\nCheck the SD card.";
+    if(prk==PRK_Trophies)return trophies::MenuTitle();
+    if(prk==PRK_TrophyDetail)return trophies::Detail(s_trophyDetail);
+
 #ifdef __3DS__
     if(prk==PRK_Unknown15 || prk==PRK_MemcardCreateError)
         return "Could not save to the SD card.\nCheck free space and try again.\nYour previous save has been kept.";
@@ -486,6 +517,7 @@ int CrespkPrompt(PRK prk, const PRD& prd)
 
 int VisiblePromptResponseCount(PRK prk, int responseCount)
 {
+    if(prk==PRK_Trophies)return std::min(responseCount,4);
 	if (FMappingPrompt(prk))
 		return std::min(responseCount, 9);
 	if (prk == PRK_VideoMenu || prk == PRK_ControlsMenu)
@@ -1174,6 +1206,7 @@ void SetPromptPrk(PROMPT* pprompt)
     float titleHeight = 0.0f;
     float responseWidth = 0.0f;
 
+    if(prk==PRK_Trophies) {ResizeBlot(pprompt,500.0f,410.0f);return;}
     const char* const promptTitle = PchzPromptTitle(prk, prd);
     if (promptTitle != nullptr)
     {
@@ -1367,6 +1400,28 @@ void ExecutePrompt(PROMPT* pprompt, int direction)
         pprompt->irespk = selectedResponse;
     };
 
+#ifdef __3DS__
+    if(pprompt->prk==PRK_OptionsMenu && response==RESPK_DebugMenu) {
+        SetPrompt(pprompt,PRP_Basic,PRK_DebugMenu);return;
+    }
+    if(pprompt->prk==PRK_DebugMenu) {
+        if(response==RESPK_TrophyPopups){
+            CaneToggleTrophyPopups3ds();rebuildPromptKeepingSelection();return;
+        }
+        SetPrompt(pprompt,PRP_Basic,response==RESPK_Back?PRK_OptionsMenu:PRK_ResetTrophiesConfirm);
+        return;
+    }
+    if(pprompt->prk==PRK_ResetTrophiesConfirm) {
+        if(response==RESPK_Yes)s_trophyResetFailed=!trophies::Reset();
+        SetPrompt(pprompt,PRP_Basic,PRK_DebugMenu);return;
+    }
+#endif
+    if(pprompt->prk==PRK_Trophies && response>=RESPK_TrophyFirst && response<RESPK_TrophyFirst+trophies::Count) {
+        return; // The selected trophy is shown in the dedicated details panel.
+    }
+    if(pprompt->prk==PRK_PauseMenu && response==RESPK_Trophies) {
+        SetPrompt(pprompt,PRP_Basic,PRK_Trophies);return;
+    }
     PRP promptGroupToClear = PRP_Basic;
 
     switch (pprompt->prk)
@@ -2247,6 +2302,14 @@ void HidePrompt(PROMPT* pprompt)
 const char* AchzFromRespk(RESPK respk)
 {
 #ifdef __3DS__
+    if(respk==RESPK_TrophyPopups)return CaneTrophyPopups3ds()?"Trophy popups: On":"Trophy popups: Off";
+    if(respk==RESPK_DebugMenu)return "Debug...";
+    if(respk==RESPK_ResetTrophies)return "Reset trophies...";
+#endif
+    if(respk==RESPK_Trophies)return "Trophies...";
+    if(respk>=RESPK_TrophyFirst && respk<RESPK_TrophyFirst+trophies::Count)return trophies::Row(int(respk)-RESPK_TrophyFirst);
+
+#ifdef __3DS__
     if(respk==RESPK_Video)return g_prompt.prk==PRK_VideoMenu?"Display...":"Graphics...";
     if(respk==RESPK_WindowMode)return !CaneIntroSeen3ds()?"Skip intro: Watch once first":CaneSkipIntro3ds()?"Skip intro: On":"Skip intro: Off";
     if(respk==RESPK_ExitToDesktop)return "Exit to Homebrew Launcher";
@@ -2672,6 +2735,7 @@ void UpdatePromptActive(PROMPT* pprompt, JOY* pjoy)
         bool adjustable = prk == PRK_VideoMenu || prk == PRK_SoundMenu;
 #ifdef __3DS__
         if(prk==PRK_KeyboardMapping)adjustable=selectedResponse!=RESPK_NativeGyroCalibrate;
+        if(prk==PRK_DebugMenu)adjustable=selectedResponse==RESPK_TrophyPopups;
         if(prk==PRK_ControllerMapping)adjustable=true;
         if(prk==PRK_NativeBottom || prk==PRK_NativeDisplayMenu)adjustable=true;
 #endif
@@ -2768,6 +2832,17 @@ void CancelPrompt(PROMPT* pprompt)
 
     switch (pprompt->prk)
     {
+        case PRK_Trophies:
+        SetPrompt(pprompt,PRP_Basic,g_ui.uisPlaying==UIS_Attract?PRK_Nil:PRK_PauseMenu);break;
+#ifdef __3DS__
+        case PRK_DebugMenu:
+        SetPrompt(pprompt,PRP_Basic,PRK_OptionsMenu);break;
+        case PRK_ResetTrophiesConfirm:
+        SetPrompt(pprompt,PRP_Basic,PRK_DebugMenu);break;
+#endif
+        case PRK_TrophyDetail:
+        SetPrompt(pprompt,PRP_Basic,PRK_Trophies);pprompt->irespk=s_trophyDetail;break;
+
 #ifdef __3DS__
         case PRK_NativeDisplayMenu:
         case PRK_NativeBottom:
@@ -2959,6 +3034,11 @@ void DrawPrompt(PROMPT* pprompt)
 
     // NTSC/PAL place the divider one unit above the response row. Japanese
     // places it at the title baseline and starts responses eight units later.
+    if(pprompt->prk==PRK_Trophies) {
+        DrawLineScreen(x,y-promptScaleY,0.0f,x+dx,y-promptScaleY,0.0f,responseColor,false);
+        trophies::DrawMenuBody(pprompt,x,y+3.0f*promptScaleY,dx,dy-(y-textBox.m_y),alpha);
+        return;
+    }
     const bool japanesePromptLayout = FJapaneseContent() && promptResponseCount > 0;
     const float dividerY = japanesePromptLayout ? y : y - promptScaleY;
     if (japanesePromptLayout)
@@ -3038,6 +3118,13 @@ void DrawPrompt(PROMPT* pprompt)
         const bool selected = i == pprompt->irespk;
 
         glm::vec4 color = selected ? GetSelectedColor(pulse) : responseColor;
+        if(!selected && response>=RESPK_TrophyFirst && response<RESPK_Max) {
+            const int trophy=int(response)-RESPK_TrophyFirst;
+            if(trophies::Unlocked(trophy)) {
+                const auto tier=trophies::definitions[trophy].tier;
+                color=tier==trophies::Bronze?glm::vec4(.9f,.65f,.4f,alpha):tier==trophies::Gold?glm::vec4(1,.82f,.25f,alpha):glm::vec4(.8f,.9f,1,alpha);
+            }
+        }
         const float selectionScale = selected ? 1.0f + (1.0f - pulse) * 0.1f : 1.0f;
         const float itemScaleX = responseScaleX * selectionScale;
         const float itemScaleY = responseScaleY * selectionScale;

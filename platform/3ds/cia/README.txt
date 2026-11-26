@@ -18,8 +18,8 @@ The CIA has been installed and launched on a console. The animated HOME Menu
 banner still has known playback issues. Build/package validation does not
 replace real-console testing.
 
-HOME Menu artwork supplied by Raihwy3. The short original jingle is synthesized
-by make_jingle.py; it contains no sampled game music. The boot logo is makerom's
+HOME Menu artwork supplied by Raihwy3. The banner jingle uses the
+achievement sound supplied by Raihwy3, prepared by make_jingle.py. The boot logo is makerom's
 MIT-licensed Homebrew logo. Credits and license notices are included.
 
 The banner is original extruded 3D text: gold Thievius script and white CTR,

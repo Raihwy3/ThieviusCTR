@@ -115,6 +115,7 @@ if(NOT WIN32)
     list(REMOVE_ITEM game_sources "Sly1-Release/spu_reverb_xapo.cpp")
 endif()
 
+list(APPEND game_sources "Sly1-Release/trophies.cpp")
 add_executable(ProjectCane ${game_sources} "${imgui_root}/imgui_demo.cpp")
 target_link_libraries(ProjectCane PRIVATE cane_ui Threads::Threads SDL2::SDL2)
 target_compile_definitions(ProjectCane PRIVATE

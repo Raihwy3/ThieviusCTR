@@ -1,6 +1,7 @@
 #include "so.h"
 #include "proxy.h"
 #include "bbmark.h"
+#include "mark.h"
 #include "clip.h"
 #include "water.h"
 #include "spliceobj.h"
@@ -1428,10 +1429,8 @@ void AdjustSoZapXps(SO* psoRoot, XP** ppxpZap)
 
 				case ZOK_Zap: 
 				{
-					auto pxpCopyOwned = std::make_unique<XP>(*pxp);
-					XP* pxpCopy = pxpCopyOwned.get();
-
-					psoRoot->psw->axp.push_back(std::move(pxpCopyOwned));
+					XP* pxpCopy = AllocSwXp(psoRoot->psw);
+					*pxpCopy = *pxp;
 
 					pxpCopy->pxpNext = *ppxpZap;
 					*ppxpZap = pxpCopy;

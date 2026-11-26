@@ -77,10 +77,40 @@ namespace
 
 void InitDzg(DZG* pdzg, int cpxp)
 {
-    *pdzg = {};
+    if (cpxp < 0)
+        cpxp = 0;
 
     pdzg->cdzMax = cpxp * 2;
-    pdzg->adz.resize(pdzg->cdzMax);
+    pdzg->cdz = 0;
+    pdzg->cdzPos = 0;
+    if (pdzg->adz.size() < static_cast<size_t>(pdzg->cdzMax))
+        pdzg->adz.resize(static_cast<size_t>(pdzg->cdzMax));
+
+    for (int i = 0; i < pdzg->cdzMax; ++i)
+    {
+        DZ& dz = pdzg->adz[i];
+        dz.pxp = nullptr;
+        dz.f = glm::vec3(0.0f);
+        dz.aafxOwner[0].reset();
+        dz.aafxOwner[1].reset();
+        dz.aafx[0] = nullptr;
+        dz.aafx[1] = nullptr;
+        dz.dzk = DZK_Normal;
+        dz.fMax = 0;
+        dz.sfMax = 0.0f;
+        dz.sf = 0.0f;
+        dz.sdv = 0.0f;
+        dz.dsdv = 0.0f;
+        dz.mpipxpdv.clear();
+        dz.mpidzg.clear();
+        dz.pdzOther = nullptr;
+        dz.dle = {};
+    }
+
+    ClearDl(&pdzg->dlPos);
+    ClearDl(&pdzg->dlZero);
+    ClearDl(&pdzg->dlMax);
+    ClearDl(&pdzg->dlUncat);
 
     InitDl(&pdzg->dlPos,   offsetof(DZ, dle));
     InitDl(&pdzg->dlZero,  offsetof(DZ, dle));
@@ -430,12 +460,26 @@ void CroutSolve(int c, float* aagCrout, float* agConst, float* agSoln)
 
 void ApplyDzg(DZG* pdzg, int cpsoRoot, int* acpso, SO*** aapso, float sdvMax, float sdwMax)
 {
+    if (cpsoRoot <= 0)
+        return;
+
     const ScopedPs2FloatMode ps2FloatMode;
 
-    std::vector<std::vector<FX>> aafxSum(cpsoRoot);
+    static std::vector<int> s_fxOffsets;
+    static std::vector<FX> s_fxSum;
+
+    if (s_fxOffsets.size() < static_cast<size_t>(cpsoRoot))
+        s_fxOffsets.resize(static_cast<size_t>(cpsoRoot));
+
+    int totalCpso = 0;
     for (int ipsoRoot = 0; ipsoRoot < cpsoRoot; ipsoRoot++) {
-        aafxSum[ipsoRoot].assign(acpso[ipsoRoot], FX{});
+        s_fxOffsets[ipsoRoot] = totalCpso;
+        totalCpso += acpso[ipsoRoot];
     }
+    if (totalCpso <= 0)
+        return;
+
+    s_fxSum.assign(static_cast<size_t>(totalCpso), FX{});
 
     for (int idz = 0; idz < pdzg->cdz; idz++) {
         DZ* pdz = &pdzg->adz[idz];
@@ -452,7 +496,7 @@ void ApplyDzg(DZG* pdzg, int cpsoRoot, int* acpso, SO*** aapso, float sdvMax, fl
 
             int ipsoRoot = psoRoot->ipsoRoot;
             FX* afxSrc = pdz->aafx[ixpd];
-            FX* afxDst = aafxSum[ipsoRoot].data();
+            FX* afxDst = s_fxSum.data() + s_fxOffsets[ipsoRoot];
 
             for (int ipso = 0; ipso < acpso[ipsoRoot]; ipso++) {
                 // The EE/VU saturates overflowing float operations. Preserve
@@ -465,7 +509,7 @@ void ApplyDzg(DZG* pdzg, int cpsoRoot, int* acpso, SO*** aapso, float sdvMax, fl
     }
 
     for (int ipsoRoot = 0; ipsoRoot < cpsoRoot; ipsoRoot++) {
-        FX* afxRoot = aafxSum[ipsoRoot].data();
+        FX* afxRoot = s_fxSum.data() + s_fxOffsets[ipsoRoot];
         SO** apso = aapso[ipsoRoot];
 
         for (int ipso = 0; ipso < acpso[ipsoRoot]; ipso++) {

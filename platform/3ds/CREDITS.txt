@@ -101,7 +101,7 @@ Upstream desktop dependencies (Libraries/):
 
 Installed HOME Menu package:
   Raihwy3 - supplied icon artwork.
-  Original synthesized jingle - platform/3ds/cia/make_jingle.py; no game samples.
+  Raihwy3 - supplied achievement sound, also used for the HOME Menu jingle.
   3DSGuy / applestash / Jakcron - makerom and the Homebrew boot logo (MIT).
   Steveice10 / carstene1ns - bannertool packaging tool.
   Floogle - pycgfx (MIT), glTF-to-CGFX conversion for the animated 3D title.
@@ -117,3 +117,18 @@ Legal notice:
   All game models, textures, levels, fonts, audio, and cutscenes come from the
   user's own legally obtained copy of the game; none are included in the
   repository or release packages.
+
+Local trophies
+The PS3 Sly Collection trophy set inspired these local awards.
+https://github.com/Raihwy3/Conker3DSRecomp
+Conker3DSRecomp was a reference for local achievement tracking; no trophy
+artwork or PlayStation services are included. See docs/trophies.md in source.
+
+Trophy popup layout and compact cup pixel design adapted from
+Conker3DSRecomp (Raihwy3 and contributors). The popup uses Sly's own font
+and menu palette; no Conker game textures or fonts are bundled.
+https://github.com/Raihwy3/Conker3DSRecomp
+
+Trophy notification audio supplied by Raihwy3 (platform/3ds/achievement.wav).
+The in-game copy is converted to mono by generate_trophy_chime.py;
+the HOME Menu banner uses the supplied stereo WAV.

@@ -904,6 +904,19 @@ void OnBinocReset(BINOC* pbinoc)
         SetDialogDialogs(pbinoc->pdialogPlaying, DIALOGS_Unavailable);
 }
 
+#ifdef __3DS__
+namespace {
+float NativeBinocTextScale(const BINOC* binoc,bool bottom)
+{
+    return bottom?.625f:(binoc->binocs==BINOCS_Confront?1.f:1.25f)*g_gl.uiScale;
+}
+float NativeBinocTextWidth(const BINOC* binoc,bool bottom)
+{
+    return bottom?288.f:(binoc->binocs==BINOCS_Confront?380.f:280.f)*g_gl.uiScale;
+}
+}
+#endif
+
 void SetBinocAchzDraw(BINOC* pbinoc, char* pchz)
 {
     pbinoc->cichLR = 0;  // Reset line break counter
@@ -912,7 +925,8 @@ void SetBinocAchzDraw(BINOC* pbinoc, char* pchz)
         // Choose scaling based on Binoc mode
         float scale = (pbinoc->binocs == BINOCS_Confront) ? 0.8f : 1.0f;
 #ifdef __3DS__
-        scale *= 1.25f; // Match the native dialogue draw size when wrapping.
+        const bool bottomDialogue=CaneDialogueOnBottom3ds();
+        scale=NativeBinocTextScale(pbinoc,bottomDialogue);
 #endif
         pbinoc->pfont->PushScaling(scale, scale);
 
@@ -925,7 +939,11 @@ void SetBinocAchzDraw(BINOC* pbinoc, char* pchz)
         // Choose wrap width based on Binoc mode
         float wrapWidth = (pbinoc->binocs == BINOCS_Confront) ? 380.0f : 280.0f;
 #ifdef __3DS__
-        if(CaneDialogueOnBottom3ds())wrapWidth=576.0f;
+        // Pixel-spaced glyph advances are not proportional across scales.
+        // Wrap with exactly the metrics used below in DrawBinoc, reserving
+        // room for the type-on cursor and rounding at the right clip edge.
+        wrapWidth=std::max(1.f,NativeBinocTextWidth(pbinoc,bottomDialogue)-
+                              pbinoc->pfont->DxFromCh('|')-1.f);
 #endif
         rt.ClineWrap(wrapWidth);
         pbinoc->pfont->PopScaling();
@@ -2419,7 +2437,11 @@ void DrawBinoc(BINOC* pbinoc)
 #else
     const float baseFontScale = state == BINOCS_Confront ? 0.8f : 1.0f;
 #endif
-    const float fontScale = bottomDialogue?.625f:baseFontScale * uiScale;
+#ifdef __3DS__
+    const float fontScale=NativeBinocTextScale(pbinoc,bottomDialogue);
+#else
+    const float fontScale=baseFontScale*uiScale;
+#endif
 
     pbinoc->pfont->PushScaling(fontScale, fontScale);
 
@@ -2428,7 +2450,11 @@ void DrawBinoc(BINOC* pbinoc)
 
     const float textHeight = static_cast<float>(pbinoc->pfont->m_dyUnscaled) * pbinoc->pfont->m_ryScale;
     if(bottomDialogue)visibleLineCount=3;
-    const float boxWidth = bottomDialogue?288.0f:UiSize(boxWidthVirtual);
+#ifdef __3DS__
+    const float boxWidth=NativeBinocTextWidth(pbinoc,bottomDialogue);
+#else
+    const float boxWidth=UiSize(boxWidthVirtual);
+#endif
     const float boxHeight = textHeight * static_cast<float>(visibleLineCount);
     const float clipX = bottomDialogue?16.0f:UiX(180.0f + offsetX);
     const float clipY = bottomDialogue?56.0f:UiY(386.80002f + offsetY);

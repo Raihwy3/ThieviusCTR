@@ -232,14 +232,14 @@ public:
 
 namespace
 {
-	struct RipSnapshotEntry { RIP* rip = nullptr; uint32_t generation = 0; };
+	struct RipSnapshotEntry { RIP* rip; uint32_t generation; };
 	struct RipSnapshot
 	{
-		std::array<RipSnapshotEntry, RIP_SLOT_COUNT> owners{};
+		RipSnapshotEntry owners[RIP_SLOT_COUNT];
 		size_t count = 0;
 
-		auto begin() const { return owners.begin(); }
-		auto end() const { return owners.begin() + count; }
+		const RipSnapshotEntry* begin() const { return owners; }
+		const RipSnapshotEntry* end() const { return owners + count; }
 	};
 
 	RipSnapshot SnapshotRipgRips(RIPG* pripg)
@@ -249,12 +249,18 @@ namespace
 		if (pripg == nullptr || pripg->psw == nullptr)
 			return snapshot;
 
-		if (pripg->psw->pripPool != nullptr)
-			pripg->psw->pripPool->ForEach([&](RIP* rip, uint32_t generation)
-			{
-				if (rip->pripg == pripg)
-					snapshot.owners[snapshot.count++] = { rip, generation };
-			});
+		RipPool* const pool = pripg->psw->pripPool;
+		if (pool == nullptr)
+			return snapshot;
+
+		for (RIP* rip = pripg->dlRip.pripFirst;
+			rip != nullptr && snapshot.count < RIP_SLOT_COUNT;
+			rip = rip->dle.pripNext)
+		{
+			const uint32_t generation = pool->Generation(rip);
+			if (generation != 0)
+				snapshot.owners[snapshot.count++] = { rip, generation };
+		}
 
 		return snapshot;
 	}
@@ -429,6 +435,9 @@ void OnRipgRemove(RIPG* pripg)
 
 void ProjectRipgTransform(RIPG* pripg, float dt, int fForce)
 {
+	if (pripg == nullptr || FIsDlEmpty(&pripg->dlRip))
+		return;
+
 	pripg->posMin = glm::vec3(FLT_MAX);
 	pripg->posMax = glm::vec3(-FLT_MAX);
 	bool fHaveBounds = false;
@@ -476,15 +485,18 @@ void ProjectRipgTransform(RIPG* pripg, float dt, int fForce)
 
 void UpdateRipg(RIPG* pripg, float dt)
 {
-	for (const RipSnapshotEntry& entry : SnapshotRipgRips(pripg))
+	if (!FIsDlEmpty(&pripg->dlRip))
 	{
-		RIP* prip = entry.rip;
+		for (const RipSnapshotEntry& entry : SnapshotRipgRips(pripg))
+		{
+			RIP* prip = entry.rip;
 
-		if (!FRipSnapshotAlive(pripg, entry))
-			continue;
+			if (!FRipSnapshotAlive(pripg, entry))
+				continue;
 
-		if (prip->tCreated < g_clock.t)
-			prip->pvtrip->pfnUpdateRip(prip, dt);
+			if (prip->tCreated < g_clock.t)
+				prip->pvtrip->pfnUpdateRip(prip, dt);
+		}
 	}
 
 	if (pripg->fFrozen || FIsDlEmpty(&pripg->dlRip))
@@ -498,14 +510,12 @@ void UpdateRipg(RIPG* pripg, float dt)
 
 void BounceRipgRips(RIPG* pripg)
 {
-	if (pripg == nullptr || pripg->ripgt != RIPGT_Bounce)
+	DL* const pdlRip = pripg != nullptr ? &pripg->dlRip : nullptr;
+	if (pripg == nullptr || pripg->ripgt != RIPGT_Bounce || pripg->poxa == nullptr || FIsDlEmpty(pdlRip))
 		return;
 
-	DL* pdlRip = &pripg->dlRip;
 	const RipSnapshot ripSnapshot = SnapshotRipgRips(pripg);
-
-	if (pripg->poxa == nullptr)
-		return;
+	static std::vector<BSP> bspPruned;
 
 	for (OX* pox = pripg->poxa->pox; pox != nullptr; pox = pox->poxNext)
 	{
@@ -537,13 +547,13 @@ void BounceRipgRips(RIPG* pripg)
 				{
 					BSP* pbspPruned = nullptr;
 					bool checkRips = false;
-					std::vector<BSP> bspPruned;
 
 					if (pso->bspc.cbsp < 1)
 						checkRips = true;
-					else
+					else if (pso->bspc.cbspFull > 0 && !pso->bspc.absp.empty())
 					{
-						bspPruned.resize(static_cast<size_t>(pso->bspc.cbspFull));
+						if (bspPruned.size() < static_cast<size_t>(pso->bspc.cbspFull))
+							bspPruned.resize(static_cast<size_t>(pso->bspc.cbspFull));
 						pbspPruned = bspPruned.data();
 
 						const PRUNE prune = PruneBsp(pso->bspc.absp.data(), &pripg->xf.posWorld, pripg->sRadiusAll, &pbspPruned);
@@ -580,6 +590,9 @@ void BounceRipgRips(RIPG* pripg)
 								}
 							}
 						}
+
+						if (FIsDlEmpty(pdlRip))
+							break;
 					}
 				}
 
@@ -591,6 +604,9 @@ void BounceRipgRips(RIPG* pripg)
 		}
 
 		s_pdliFirst = dliPhys.m_pdliNext;
+
+		if (FIsDlEmpty(pdlRip))
+			break;
 	}
 
 	if (FIsDlEmpty(pdlRip))
@@ -599,6 +615,9 @@ void BounceRipgRips(RIPG* pripg)
 
 void RenderRipgSelf(RIPG* pripg, CM* pcm, RO* pro)
 {
+	if (pripg == nullptr || FIsDlEmpty(&pripg->dlRip))
+		return;
+
 	for (const RipSnapshotEntry& entry : SnapshotRipgRips(pripg))
 	{
 		RIP* prip = entry.rip;

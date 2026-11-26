@@ -104,6 +104,7 @@ def objects() -> list[Path]:
         PLATFORM_3DS / 'update_http.h',
         PLATFORM_3DS / 'version_3ds.h',
         PLATFORM_3DS / 'launcher_ui_3ds.h',
+        PLATFORM_3DS / 'launcher_graphics.inc',
         ca_hdr,
     ]
 

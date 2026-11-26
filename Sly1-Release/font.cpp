@@ -103,6 +103,21 @@ namespace
 		add(left,  bottom, u0, v1);
 	}
 
+#ifdef __3DS__
+    bool NativeTextFont(const CFontBrx* font)
+    {
+        const CFontBrx* text=FFontLoaded(0)?PfontFromFont(0):nullptr;
+        return text && font->m_pbmp && font->m_pbmp==text->m_pbmp;
+    }
+    float NativeTextAdvance(const CFontBrx* font, const GLYFF* glyph)
+    {
+        // The authored one-texel gap becomes less than one screen pixel on
+        // 3DS. Keep a whole empty pixel between glyph quads, and use this
+        // same advance for measuring, wrapping and drawing.
+        return std::ceil(glyph->dx*font->m_rxScale)+1.f;
+    }
+#endif
+
 	void AppendGlyph(GlyphVertices& vertices, CFontBrx* font, uint32_t codepoint,
 		float x, float y, const glm::vec4& color)
 	{
@@ -307,6 +322,7 @@ int CRichText::ClineWrap(float dx)
 	float currentLineWidth = 0.0f;
 
 	while (true) {
+        const std::size_t characterStart=static_cast<std::size_t>(m_pchCur-m_achz);
 		uint32_t ch = ChNext();  // Advance and get next character
 		if (ch == '\0') {
 			return numLines;  // End of text
@@ -337,10 +353,17 @@ int CRichText::ClineWrap(float dx)
 				--wrapPos;
 			}
 
-			// No word boundary exists. Count a hard wrap without writing at
-			// m_pchCur, which points at the next character (or the terminator).
-			++numLines;
-			currentLineWidth = charWidth;
+            // Draw() follows explicit newlines; counting a hard wrap alone
+            // leaves an overlong word clipped on the right. Insert before
+            // the current token, preserving every character and UTF-8 byte.
+            if(currentLineWidth>charWidth) {
+                const std::size_t cursorOffset=static_cast<std::size_t>(m_pchCur-m_achz);
+                m_text.insert(characterStart,1,'\n');
+                m_achz=m_text.data();
+                m_pchCur=m_achz+cursorOffset+1;
+                ++numLines;
+                currentLineWidth=charWidth;
+            }
 		}
 
 	continue_loop:
@@ -924,6 +947,9 @@ float CFontBrx::DxFromCh(char ch)
 		return static_cast<float>(m_dxSpaceUnscaled) * m_rxScale;
 	}
 
+#ifdef __3DS__
+    if(NativeTextFont(this))return NativeTextAdvance(this,pGlyph);
+#endif
 	// If the glyph is found, return its width, scaled.
 	return static_cast<float>(pGlyph->dx + 1) * m_rxScale;
 }
@@ -931,6 +957,9 @@ float CFontBrx::DxFromCh(char ch)
 float CFontBrx::DxFromCodepoint(uint32_t codepoint)
 {
 	GLYFF* glyph = PglyffFromCodepoint(codepoint);
+#ifdef __3DS__
+    if(glyph && NativeTextFont(this))return NativeTextAdvance(this,glyph);
+#endif
 	return glyph != nullptr
 		? static_cast<float>(glyph->dx + 1) * m_rxScale
 		: static_cast<float>(m_dxSpaceUnscaled) * m_rxScale;

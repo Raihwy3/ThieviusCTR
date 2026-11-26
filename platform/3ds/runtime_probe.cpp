@@ -1,3 +1,4 @@
+#include "../../Sly1-Release/trophies.h"
 #include <3ds.h>
 #include "brx.h"
 #include "frm.h"
@@ -44,7 +45,13 @@ FILE* logFile=nullptr;
 bool normalShutdown=false;
 bool monitorActive=false;
 void stage(const char* text) {
-    if(!monitorActive)printf("%s\n",text);
+    if(!monitorActive) {
+        using namespace cane_launcher_graphics;
+        Canvas top(GFX_TOP),bottom(GFX_BOTTOM);
+        top.panel("ThieviusCTR");top.text("Starting Sly Cooper...",98,17);
+        bottom.panel("Loading");bottom.text("Preparing the game...",99,14);
+        bottom.bar(156,0,0);present();
+    }
     if(logFile) {fprintf(logFile,"%s\n",text);fflush(logFile);}
 }
 }
@@ -125,7 +132,7 @@ int main() {
     CanePerfMonitor3ds perfMonitor;
     try {
         stage("Original runtime: startup");
-        printf("Heap: %lu MiB\n",(unsigned long)(envGetHeapSize()/1024/1024));
+        if(logFile)fprintf(logFile,"Heap: %lu MiB\n",(unsigned long)(envGetHeapSize()/1024/1024));
         cane::g_dataOverride="sdmc:/3ds/ThieviusCTR";
         cane::g_userOverride="sdmc:/3ds/ThieviusCTR";
         CaneLoadNativeOptions3ds();
@@ -145,12 +152,13 @@ int main() {
         stage("Start native scene / character renderer");
         CaneRuntimeGraphics graphics;graphics.init();
         perfMonitor.init(&bottomConsole, CaneLauncherDetectConsoleModel());
-        graphics.attachBottomConsole(&bottomConsole);
+        graphics.attachBottomConsole(&bottomConsole, perfMonitor.generationPtr());
         perfMonitor.setTargetFps(CaneRenderCap3ds());
         u64 lastPresentedTick=0;
         bool startupTitleReached=false;caneStartupPresentation=true;
         bool skipStartupAnimation=CaneSkipIntro3ds();
         bool skippingTitle=false;float titleMasterVolume=1;
+        extern void CaneDiscardStartupSounds3ds();
         monitorActive=true;
         std::string file="sdmc:/3ds/ThieviusCTR/Worlds/Splash/Splash.brx";
         extern void CanePrefetchLevel3ds(LEVELINFO*,const std::string&);
@@ -254,7 +262,7 @@ int main() {
             const bool fastTitle=skipStartupAnimation && !startupTitleReached && level && level->levelID==3;
             if(fastTitle && !skippingTitle) {
                 graphics.showLoading("Preparing title...");
-                titleMasterVolume=GetMasterVolume();SetMasterVolume(0);skippingTitle=true;
+                titleMasterVolume=GetMasterVolume();SetMasterVolume(0);CaneDiscardStartupSounds3ds();skippingTitle=true;
                 stage("Advancing startup script without rendering the intro");
             }
             const u64 wallNow=osGetTime();
@@ -316,7 +324,7 @@ int main() {
             }
             if(fastTitle)last=osGetTime();
             if(skippingTitle && startupTitleReached) {
-                SetMasterVolume(titleMasterVolume);skippingTitle=false;ResyncClockTick(&g_clock);
+                CaneDiscardStartupSounds3ds();SetMasterVolume(titleMasterVolume);skippingTitle=false;ResyncClockTick(&g_clock);
                 stage("Startup script ready at original title menu");
             }
             simTicks+=svcGetSystemTick()-simT0;

@@ -9,6 +9,8 @@
 
 ## Status & Features
 
+- **Local trophies**: 36 awards based on the PS3 trophy set, with an in-game Trophies menu, saved progress, and optional bottom-right top-screen notifications (`Options > Debug > Trophy popups`, off by default).
+
 - **Playability**: Real-hardware tested on **New 3DS** through Paris, The Hideout, and the first level of Episode 1 (*Tide of Terror*). Later episodes, gameplay polish, and some UI panels/effects are still work in progress.
 - **Hardware Recommendation**: Developed and tested primarily on **New 3DS / New 2DS XL**. Old 3DS compatibility and performance have not yet been verified.
 - **Zero-PC On-Console Extractor**: Built-in dual-screen launcher verifies your `SCUS_971.98` ISO on the SD card and extracts all 46 levels, sound banks, music, dialog/commentary audio, and all 18 cutscenes directly on the console — no PC conversion tools required.

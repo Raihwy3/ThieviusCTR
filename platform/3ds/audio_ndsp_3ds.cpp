@@ -324,6 +324,20 @@ static IXAudio2SourceVoice* play(const std::vector<int16_t>& pcm, float rate, fl
     return result.release();
 }
 
+#include "trophy_chime.inc"
+static std::unique_ptr<IXAudio2SourceVoice> s_trophyChime;
+void CaneStopTrophyChime3ds(){s_trophyChime.reset();}
+static void refreshTrophyChimeMix() {
+    if(audioReady && s_trophyChime && s_trophyChime->channel>=0)
+        applyMixPan(s_trophyChime->channel,.55f*sfx*master*s_channelVolumes[0],0.f);
+}
+void CanePlayTrophyChime3ds() {
+    if(!audioReady || s_aptSuspended || master<=0.f || sfx<=0.f)return;
+    s_trophyChime.reset();
+    const std::vector<int16_t> pcm(std::begin(kTrophyChimePcm),std::end(kTrophyChimePcm));
+    s_trophyChime.reset(play(pcm,float(kTrophyChimeRate),.55f*sfx*s_channelVolumes[0],0.f));
+}
+
 static FILE* ensureBankFile(int ibnk) {
     if (ibnk < 0 || ibnk >= 7) return nullptr;
     if (!bankFiles[ibnk]) bankFiles[ibnk] = std::fopen(bankPath(ibnk).c_str(), "rb");
@@ -646,6 +660,7 @@ static void refreshAllMusicVoiceMixes() {
 static void refreshAllLiveAudio() {
     if (!audioReady) return;
     refreshAllMusicVoiceMixes();
+    refreshTrophyChimeMix();
     applyVagMix();
     if (g_psw) {
         for (auto& owned : g_psw->ambOwners) {
@@ -759,6 +774,7 @@ static bool startBackend(int choice) {
 static void onAptAudioEvent(APT_HookType hook, void*) {
     if (hook == APTHOOK_ONSUSPEND || hook == APTHOOK_ONSLEEP) {
         if (s_aptSuspended) return;
+        s_trophyChime.reset();
         s_aptSuspended = true;
         if (audioReady) {
             if (vag && vag->channel >= 0 && !s_vagSleepSaved) {
@@ -1326,6 +1342,8 @@ void PreloadVag(const char* name) {
 void PreloadVagFileName(const char* name) { PreloadVag(name); }
 
 void UpdateSounds() {
+    if(s_trophyChime && s_trophyChime->done())s_trophyChime.reset();
+    refreshTrophyChimeMix();
     drainPendingLinearFrees(false);
     CaneUpdateMusic();
     CanePumpVagStream3ds();
@@ -1399,7 +1417,15 @@ void UpdateSounds() {
         [](const auto& amb) { return !amb || amb->fStopped; }), owners.end());
 }
 
+// Accelerated startup must not leave silent intro voices playing after unmute.
+void CaneDiscardStartupSounds3ds() {
+    s_trophyChime.reset();
+    StopVag();
+    if (g_psw) for (auto& amb : g_psw->ambOwners) if (amb) StopSound(amb.get(), 0);
+}
+
 void KillSoundSystem() {
+    s_trophyChime.reset();
     KillMusic();
     StopVag();
     CaneFmvPcmStop3ds();
@@ -1459,6 +1485,7 @@ static void CaneSaveAudioConfig() {
 }
 
 bool CaneChooseAudio3ds(int choice) {
+    s_trophyChime.reset();
     requestedDsp = (choice == 1) ? 1 : 0;
     IXAudio2SourceVoice* saved = vag;
     vag = nullptr;
@@ -1671,6 +1698,7 @@ void SetUserMusicVolume(float value) {
 }
 void SetUserSfxVolume(float value) {
     sfx = std::clamp(value, 0.0f, 1.0f);
+    refreshTrophyChimeMix();
     if (g_psw) for (auto& owned : g_psw->ambOwners) if (owned) applyAmbVoicesMix(*owned);
     CaneSaveAudioConfig();
 }

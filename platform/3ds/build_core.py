@@ -31,7 +31,8 @@ units = (sorted(p.stem for p in (ROOT / 'Sly1-Release').glob('*.cpp')
 if arguments == ['--all']:
     units.extend(['input_3ds', 'graphics_loader_3ds', 'audio_ndsp_3ds', 'video_unavailable_3ds'])
 flags = ['-march=armv6k', '-mtune=mpcore', '-mfloat-abi=hard', '-mtp=soft',
-         '-std=gnu++20', '-O2', '-g', '-ffunction-sections', '-fdata-sections',
+         '-std=gnu++20', '-O3', '-g', '-fno-math-errno', '-fno-trapping-math',
+         '-ffunction-sections', '-fdata-sections',
          '-fno-strict-aliasing', '-fpermissive', '-D__3DS__', '-DGLM_FORCE_PURE',
          '-DGLFW_INCLUDE_NONE', '-I' + str(ROOT / 'Libraries/include'),
          '-I' + str(ROOT / 'Libraries/include/SDL2'),
@@ -96,6 +97,9 @@ def compile_one(name):
         source_hash.update((OUT / 'embedded_shaders.h').read_bytes())
     if name == 'glob':
         source_hash.update((ROOT/'platform/3ds/model_decode_3ds.inc').read_bytes())
+    if name == 'trophies':
+        source_hash.update((ROOT/'Sly1-Release/trophy_record.inc').read_bytes())
+        source_hash.update((ROOT/'Sly1-Release/trophy_ui_state.inc').read_bytes())
     if name == 'save':
         source_hash.update((ROOT/'platform/3ds/save_storage.inc').read_bytes())
     if name == 'input_3ds':
@@ -104,6 +108,7 @@ def compile_one(name):
         source_hash.update(audio_shared.read_bytes())
         source_hash.update(music_shared.read_bytes())
         source_hash.update((ROOT/"platform/3ds/music_3ds.inc").read_bytes())
+        source_hash.update((ROOT/"platform/3ds/trophy_chime.inc").read_bytes())
     digest = source_hash.hexdigest()
     if (OUT / (name + '.o')).exists() and stamp.exists() and stamp.read_text() == digest:
         print('CACHED ' + name, flush=True)

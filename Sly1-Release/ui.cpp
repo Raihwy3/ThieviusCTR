@@ -1,4 +1,5 @@
 #include "ui.h"
+#include "trophies.h"
 #include "content.h"
 #include "mb.h"
 #include "binoc.h"
@@ -307,6 +308,12 @@ void UpdateUi(UI* pui)
             ReloadCurrentLevel();
             uis = pui->uis;
         }
+        else if (pjoy->IsPressed(BTN_SQUARE))
+        {
+            pjoy->SetHandled(BTN_SQUARE);
+            SetPrompt(&g_prompt, PRP_Basic, PRK_Trophies);
+            uis = pui->uis;
+        }
         else if (pjoy->IsPressed(BTN_SELECT))
         {
             pjoy->SetHandled(BTN_SELECT);
@@ -494,6 +501,7 @@ void DrawUi(UI* pui)
 
     //DrawUiSelf(pui);
     DrawBlots();
+    trophies::Draw();
 }
 
 void RenderUi(UI* pui)

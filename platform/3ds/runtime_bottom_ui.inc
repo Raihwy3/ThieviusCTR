@@ -34,10 +34,12 @@ static void CaneBottomStatusNative() {
     if(caneLoading)CaneBottomTextNative(caneLoadingText,120,214,192,JH_Right);
     else if(!CaneDialogueOnBottom3ds() && g_prompt.blots==BLOTS_Hidden) {
         if(g_ui.uis==UIS_Attract) {
-            CaneQuadNative(8,156,148,50,0,glm::vec4(.04f,.09f,.15f,1));
-            CaneQuadNative(164,156,148,50,0,glm::vec4(.04f,.09f,.15f,1));
-            CaneBottomTextNative("Play",8,169,148,JH_Center);
-            CaneBottomTextNative("Options",164,169,148,JH_Center);
+            CaneQuadNative(8,156,96,50,0,glm::vec4(.04f,.09f,.15f,1));
+            CaneQuadNative(112,156,96,50,0,glm::vec4(.04f,.09f,.15f,1));
+            CaneQuadNative(216,156,96,50,0,glm::vec4(.04f,.09f,.15f,1));
+            CaneBottomTextNative("Trophies",216,169,96,JH_Center);
+            CaneBottomTextNative("Play",8,169,96,JH_Center);
+            CaneBottomTextNative("Options",112,169,96,JH_Center);
         }
     }
     caneHudLayer=CaneHudLayer::Top;

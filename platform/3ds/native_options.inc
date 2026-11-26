@@ -1,5 +1,8 @@
 // Native options live beside the launcher rather than in the desktop config.
 // Keep this separate from game saves and the existing audio configuration.
+extern void CaneStopTrophyChime3ds();
+static bool caneTrophyPopups=false;
+bool CaneTrophyPopups3ds(){return caneTrophyPopups;}
 static bool caneNewButtonIcons=true;
 static bool caneSwapBA=true;
 static bool caneCameraInvertX=true;
@@ -55,6 +58,7 @@ void CaneLoadNativeOptions3ds() {
             else if(std::strcmp(key,"bottom_bottles")==0 && value>=0 && value<=1)caneBottomBottles=value;
             else if(std::strcmp(key,"bottom_monitor")==0 && value>=0 && value<=1)caneBottomMonitor=value;
             else if(std::strcmp(key,"intro_seen")==0 && value>=0 && value<=1)caneIntroSeen=value;
+            else if(std::strcmp(key,"trophy_popups")==0 && (value==0 || value==1))caneTrophyPopups=value!=0;
             else if(std::strcmp(key,"skip_intro")==0 && value>=0 && value<=1)caneSkipIntro=value;
             else if(std::strcmp(key,"render_cap")==0 && (value==30 || value==60))caneRenderCap=value;
             else if(std::strcmp(key,"stereo_strength")==0 && value>=25 && value<=200)caneStereoStrength=value;
@@ -69,6 +73,7 @@ void CaneLoadNativeOptions3ds() {
     }
     std::fprintf(stderr,"Button icons: %s (loaded)\n",caneNewButtonIcons?"New 3DS":"PS2");
     std::fprintf(stderr,"Swap B/A: %s (loaded)\n",caneSwapBA?"On":"Off");
+    std::fprintf(stderr,"Trophy popups: %s (loaded)\n",caneTrophyPopups?"On":"Off");
     std::fprintf(stderr,"Invert camera=%d,%d binoc=%d,%d (loaded)\n",
         int(caneCameraInvertX),int(caneCameraInvertY),int(caneBinocInvertX),int(caneBinocInvertY));
 }
@@ -89,11 +94,17 @@ static bool CaneSaveNativeOptions3ds() {
         written=written && std::fprintf(file,"bottom_coins %d\nbottom_health %d\nbottom_monitor %d\n",int(caneBottomCoins),int(caneBottomHealth),int(caneBottomMonitor))>0;
         written=written && std::fprintf(file,"bottom_bottles %d\n",int(caneBottomBottles))>0;
         written=written && std::fprintf(file,"intro_seen %d\nskip_intro %d\n",int(caneIntroSeen),int(caneSkipIntro))>0;
+        written=written && std::fprintf(file,"trophy_popups %d\n",int(caneTrophyPopups))>0;
         bool closed=std::fclose(file)==0;
         if(written && closed)saved=std::rename(temp,path)==0;
         if(!saved)std::remove(temp);
     }
     return saved;
+}
+void CaneToggleTrophyPopups3ds(){
+    caneTrophyPopups=!caneTrophyPopups;
+    if(!caneTrophyPopups)CaneStopTrophyChime3ds();
+    CaneSaveNativeOptions3ds();
 }
 void CaneSetNewButtons3ds(bool enabled) {
     caneNewButtonIcons=enabled;bool saved=CaneSaveNativeOptions3ds();

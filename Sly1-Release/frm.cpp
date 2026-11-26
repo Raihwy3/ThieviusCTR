@@ -42,7 +42,8 @@ void OpenFrame()
 			{
 				if (it->get() == pblipsp)
 				{
-					psw->blipspOwners.erase(it);
+					*it = std::move(psw->blipspOwners.back());
+					psw->blipspOwners.pop_back();
 					break;
 				}
 			}
@@ -52,7 +53,8 @@ void OpenFrame()
 		{
 			if (it->get() == pblip)
 			{
-				psw->blipOwners.erase(it);
+				*it = std::move(psw->blipOwners.back());
+				psw->blipOwners.pop_back();
 				break;
 			}
 		}

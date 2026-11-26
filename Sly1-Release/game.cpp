@@ -1,4 +1,5 @@
 #include "game.h"
+#include "trophies.h"
 #include "sw.h"
 #include "Input.h"
 #include "chkpnt.h"
@@ -259,6 +260,7 @@ void SetupGame(std::string& world, GRFTRANS grftrans)
 
 void UpdateGameState(float dt)
 {
+    trophies::Update(g_clock.dtReal);
     g_pgsCur->dt += dt;
     g_pwsCur->dt += dt;
     g_plsCur->dt += dt;

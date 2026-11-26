@@ -395,8 +395,11 @@ static int CedgeFindAtPos(GEOM* pgeom, BSPC* pbspc, int ipos, int cedgeMax, EDGE
 
     // Retail allocates cbspFull temporary BSP nodes and prunes the tree with a
     // radius of 1 around the selected vertex.  Only surfaces represented in
-    // that mixed/pruned tree contribute candidate edges.
-    std::vector<BSP> abspPruned(static_cast<size_t>(pbspc->cbspFull));
+    // that mixed/pruned tree contribute candidate edges.  Reuse one per-thread
+    // buffer; PruneBsp writes every node it emits.
+    static std::vector<BSP> abspPruned;
+    if (abspPruned.size() < static_cast<size_t>(pbspc->cbspFull))
+        abspPruned.resize(static_cast<size_t>(pbspc->cbspFull));
     BSP* pbspNext = abspPruned.data();
 
     if (PruneBsp(pbspc->absp.data(), &pgeom->apos[ipos], 1.0f, &pbspNext) != PRUNE_Mixed)
