@@ -72,15 +72,15 @@ extern "C" {
 [[noreturn]] void __real_abort();
 [[noreturn]] void __real_exit(int);
 [[noreturn]] void __real__exit(int);
-[[noreturn]] void __wrap_abort() {
+[[noreturn]] __attribute__((used)) void __wrap_abort() {
     unexpectedExit("abort",1,__builtin_return_address(0));
     __real__exit(1);
 }
-[[noreturn]] void __wrap_exit(int code) {
+[[noreturn]] __attribute__((used)) void __wrap_exit(int code) {
     unexpectedExit("exit",code,__builtin_return_address(0));
     __real_exit(code);
 }
-[[noreturn]] void __wrap__exit(int code) {
+[[noreturn]] __attribute__((used)) void __wrap__exit(int code) {
     unexpectedExit("_exit",code,__builtin_return_address(0));
     __real__exit(code);
 }
@@ -350,8 +350,10 @@ int main() {
             graphics.updateMs=float(double(updateTicks)/268111.856);
             updateTicks=0;
             if(!missionComplete && g_psw && g_pcm) {
+                CanePumpVagStream3ds();
                 const u64 firstDrawStart=firstLevelFrame?osGetTime():0;
                 graphics.draw();
+                CanePumpVagStream3ds();
                 if(firstLevelFrame) {
                     std::fprintf(stderr,"Level first draw ms: %llu level=0x%03X (includes visible texture/mesh preparation)\n",
                         (unsigned long long)(osGetTime()-firstDrawStart),level?unsigned(level->levelID):0u);

@@ -31,7 +31,8 @@ units = (sorted(p.stem for p in (ROOT / 'Sly1-Release').glob('*.cpp')
 if arguments == ['--all']:
     units.extend(['input_3ds', 'graphics_loader_3ds', 'audio_ndsp_3ds', 'video_unavailable_3ds'])
 flags = ['-march=armv6k', '-mtune=mpcore', '-mfloat-abi=hard', '-mtp=soft',
-         '-std=gnu++20', '-O3', '-g', '-fno-math-errno', '-fno-trapping-math',
+         '-std=gnu++20', '-O3', '-g', '-fomit-frame-pointer', '-flto=auto',
+         '-fno-math-errno', '-fno-trapping-math',
          '-ffunction-sections', '-fdata-sections',
          '-fno-strict-aliasing', '-fpermissive', '-D__3DS__', '-DGLM_FORCE_PURE',
          '-DGLFW_INCLUDE_NONE', '-I' + str(ROOT / 'Libraries/include'),
@@ -132,6 +133,6 @@ if not all(r['compiled'] for r in results):
 archive = OUT / 'libcane-gameplay.a'
 if not replace_archive:
     archive.unlink(missing_ok=True)
-subprocess.run([str(DK / 'devkitARM/bin/arm-none-eabi-ar'), 'rcs', str(archive),
+subprocess.run([str(DK / 'devkitARM/bin/arm-none-eabi-gcc-ar'), 'rcs', str(archive),
                 *[str(OUT / (r['unit'] + '.o')) for r in results]], check=True)
 print('Original gameplay archive:', archive)

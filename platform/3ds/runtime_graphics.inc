@@ -341,6 +341,7 @@ class CaneRuntimeGraphics {
             m[0][2]*p.x+m[1][2]*p.y+m[2][2]*p.z+m[3][2]);
     }
     std::vector<PreLight> frameLights;
+    size_t frameDirLightCount=0;
     struct WorkerScratch {
         std::vector<PreLight> meshLights;
         std::vector<glm::mat3> boneNormMats;
@@ -837,6 +838,68 @@ class CaneRuntimeGraphics {
         return buf;
     }
     u64 tkAnim=0,tkMoved=0;
+    void shadeVertexDir(WorkerScratch& sc,Vertex& vertex,const SUBGLOB& sub,size_t index,glm::vec3 normal,bool skipNormalMat,const glm::mat3& normalMat,float baseAmbient,float baseMid,bool anyHighlight,bool sameAll,bool sameSatDiff,bool approxOneTex,uint8_t& maxR,uint8_t& maxB) const {
+        const auto& input=sub.vertices[index];
+        if(!skipNormalMat)normal=normalMat*normal;
+        const float nlSq=glm::dot(normal,normal);
+        normal=nlSq>1e-8f?normal*fastRsqrt(nlSq):glm::vec3(0);
+        float ambient=baseAmbient,mid=baseMid;
+        float base=(input.color.r+input.color.g+input.color.b)*(1.0f/3.0f);
+        float wA=input.color.a;
+        if(!anyHighlight) {
+            for(const auto& pl:sc.meshLights) {
+                float diffuse=glm::dot(normal,pl.dir);
+                diffuse+=diffuse*diffuse*diffuse;
+                const float a=diffuse*pl.ruShadow+pl.duShadow;
+                if(a>0.0f)ambient+=a;
+                const float m=diffuse*pl.ruMidtone+pl.duMidtone;
+                if(m>0.0f)mid+=m;
+            }
+            mid=std::max(0.0f,std::min(mid,1.0f));
+            float wR=std::max(std::min(1.0f-mid,ambient),0.0f)*base;
+            float wG=mid*base;
+            if(sameAll) {
+                float s=std::min(1.0f,wR+wG);
+                setVertexColor(vertex,s,s,s,wA);
+            } else if(approxOneTex) {
+                float s=std::min(1.0f,wR*0.6f+wG);
+                setVertexColor(vertex,s,s,s,wA);
+            } else {
+                setVertexColor(vertex,wR,wG,0.0f,wA);
+                if(vertex.color[0]>maxR)maxR=vertex.color[0];
+            }
+            return;
+        }
+        glm::vec3 highlight(0);
+        for(const auto& pl:sc.meshLights) {
+            float diffuse=glm::dot(normal,pl.dir);
+            diffuse+=diffuse*diffuse*diffuse;
+            const float a=diffuse*pl.ruShadow+pl.duShadow;
+            if(a>0.0f)ambient+=a;
+            const float m=diffuse*pl.ruMidtone+pl.duMidtone;
+            if(m>0.0f)mid+=m;
+            const float hl=diffuse*pl.ruHighlight+pl.duHighlight;
+            if(hl>0.0f)highlight+=pl.rgbaColor*hl;
+        }
+        float remaining=1.0f-std::max({highlight.r,highlight.g,highlight.b});
+        mid=std::max(0.0f,std::min(mid,remaining));
+        float wR=std::max(std::min(remaining-mid,ambient),0.0f)*base;
+        float wG=mid*base;
+        highlight=glm::min(highlight,glm::vec3(1.0f))*base;
+        float wB=(highlight.r+highlight.g+highlight.b)*(1.0f/3.0f);
+        if(sameAll) {
+            float s=std::min(1.0f,wR+wG+wB);
+            setVertexColor(vertex,s,s,s,wA);
+        } else if(approxOneTex) {
+            float s=std::min(1.0f,wR*0.6f+wG+wB*1.25f);
+            setVertexColor(vertex,s,s,s,wA);
+        } else {
+            if(sameSatDiff) {wG=std::min(1.0f,wG+wB);wB=0.0f;}
+            setVertexColor(vertex,wR,wG,wB,wA);
+            if(vertex.color[0]>maxR)maxR=vertex.color[0];
+            if(vertex.color[2]>maxB)maxB=vertex.color[2];
+        }
+    }
     void shadeVertex(WorkerScratch& sc,Vertex& vertex,const SUBGLOB& sub,size_t index,const glm::vec3& world,glm::vec3 normal,bool alreadyWorldNorm,const glm::mat3& normalMat,float baseAmbient,float baseMid,bool sameAll,bool sameSatDiff,bool approxOneTex,uint8_t& maxR,uint8_t& maxB) const {
         const auto& input=sub.vertices[index];
         if(!alreadyWorldNorm)normal=normalMat*normal;
@@ -908,14 +971,21 @@ class CaneRuntimeGraphics {
             } else {
                 const glm::vec3 center=transformPoint(packet.model,sub.posCenter);
                 const float radius=sub.sRadius*modelMaxScale;
-                for(const PreLight& pl:frameLights) {
+                const size_t nLights=frameLights.size();
+                for(size_t li=0;li<frameDirLightCount;++li) {
+                    const PreLight& pl=frameLights[li];
                     if(packet.dynamic && pl.fExcludeDynamic)continue;
                     if(pl.fDynamic && !packet.dynamic && !packet.liveLight)continue;
-                    if(pl.kind!=LIGHTK_Direction) {
-                        const float reach=radius+pl.maxR;
-                        if(glm::distance2(center,pl.pos)>reach*reach)continue;
-                        needWorld=true;
-                    }
+                    sc.meshLights.push_back(pl);
+                }
+                for(size_t li=frameDirLightCount;li<nLights;++li) {
+                    const PreLight& pl=frameLights[li];
+                    if(packet.dynamic && pl.fExcludeDynamic)continue;
+                    if(pl.fDynamic && !packet.dynamic && !packet.liveLight)continue;
+                    const float reach=radius+pl.maxR;
+                    if(std::abs(center.x-pl.pos.x)>reach || std::abs(center.y-pl.pos.y)>reach || std::abs(center.z-pl.pos.z)>reach)continue;
+                    if(glm::distance2(center,pl.pos)>reach*reach)continue;
+                    needWorld=true;
                     sc.meshLights.push_back(pl);
                 }
             }
@@ -969,49 +1039,111 @@ class CaneRuntimeGraphics {
         const float baseAmbient=doLight?g_psw->lsmDefault.uShadow:0.0f;
         const float baseMid=doLight?(g_psw->lsmDefault.uMidtone+sub.unSelfIllum*.000031f):0.0f;
         const size_t vCount=sub.vertices.size();
-        for(size_t index=0;index<vCount;++index) {
-            const auto& input=sub.vertices[index];auto& vertex=out[index];
-            glm::vec3 position=input.pos;
-            glm::vec3 normal=input.normal;
-            if(hasActivePoses) {
-                for(const auto& ap:sc.activePoses) {
-                    size_t delta=(size_t(sub.baseVertex)+index)*size_t(glob.poseCount)+ap.index;
-                    if(delta<glob.poseDpos.size())position+=glm::vec3(glob.poseDpos[delta])*ap.weight;
+        if(!doLight && !hasSkin && !hasActivePoses) {
+            if(bakeWorld) {
+                for(size_t index=0;index<vCount;++index) {
+                    const auto& input=sub.vertices[index];auto& vertex=out[index];
+                    const glm::vec3 outPos=transformPoint(packet.model,input.pos);
+                    vertex.position[0]=outPos.x;vertex.position[1]=outPos.y;vertex.position[2]=outPos.z;
+                    vertex.uv[0]=input.uv.x;vertex.uv[1]=1.0f-input.uv.y;
+                    setVertexColor(vertex,input.color.r,input.color.g,input.color.b,input.color.a);
+                    if(vertex.color[3]>0 && vertex.color[3]<230)softAlpha=true;
+                }
+            } else {
+                for(size_t index=0;index<vCount;++index) {
+                    const auto& input=sub.vertices[index];auto& vertex=out[index];
+                    vertex.position[0]=input.pos.x;vertex.position[1]=input.pos.y;vertex.position[2]=input.pos.z;
+                    vertex.uv[0]=input.uv.x;vertex.uv[1]=1.0f-input.uv.y;
+                    setVertexColor(vertex,input.color.r,input.color.g,input.color.b,input.color.a);
+                    if(vertex.color[3]>0 && vertex.color[3]<230)softAlpha=true;
                 }
             }
-            bool alreadyWorldNorm=false;
-            if(hasSkin) {
-                glm::vec3 skPos(0),skNorm(0);float total=0;
-                for(unsigned b=0;b<4;++b) {
-                    float w=input.boneWeights[b];
-                    if(w!=0) {
-                        size_t bone=input.boneIndices[b];
-                        if(bone<nBones) {
-                            const glm::mat4& bm=set.boneMatrices[bone];
-                            if(w==1.0f && total==0.0f) {
-                                skPos=transformPoint(bm,position);
-                                if(doLight)skNorm=boneNorms[bone]*normal;
-                                total=1.0f;break;
-                            }
-                            skPos+=transformPoint(bm,position)*w;
-                            if(doLight)skNorm+=boneNorms[bone]*normal*w;
-                            total+=w;
-                        }
+        } else {
+            const bool noLights=doLight && sc.meshLights.empty();
+            bool allDirectional=doLight && !noLights;
+            bool anyHighlight=false;
+            if(allDirectional) {
+                for(const auto& pl:sc.meshLights) {
+                    if(pl.kind!=LIGHTK_Direction) {allDirectional=false;break;}
+                    if(pl.ruHighlight!=0.0f || pl.duHighlight!=0.0f)anyHighlight=true;
+                }
+            }
+            bool useLocalDir=false;
+            if(allDirectional && !hasSkin) {
+                const float s0=glm::dot(normalMat[0],normalMat[0]);
+                const float s1=glm::dot(normalMat[1],normalMat[1]);
+                const float s2=glm::dot(normalMat[2],normalMat[2]);
+                if(s0>1e-6f && std::abs(s0-s1)<=s0*1e-3f && std::abs(s0-s2)<=s0*1e-3f &&
+                   std::abs(glm::dot(normalMat[0],normalMat[1]))<=s0*1e-3f &&
+                   std::abs(glm::dot(normalMat[0],normalMat[2]))<=s0*1e-3f &&
+                   std::abs(glm::dot(normalMat[1],normalMat[2]))<=s0*1e-3f) {
+                    useLocalDir=true;
+                    const glm::mat3 invRot=glm::transpose(normalMat);
+                    for(auto& pl:sc.meshLights) {
+                        glm::vec3 ld=invRot*pl.dir;
+                        const float l2=glm::dot(ld,ld);
+                        pl.dir=l2>1e-8f?ld*fastRsqrt(l2):glm::vec3(0);
                     }
                 }
-                if(total>0) {position=skPos;if(doLight){normal=skNorm;alreadyWorldNorm=true;}}
             }
-            glm::vec3 world(0);
-            if(needWorld)world=transformPoint(packet.model,position);
-            const glm::vec3& outPos=bakeWorld?world:position;
-            vertex.position[0]=outPos.x;vertex.position[1]=outPos.y;vertex.position[2]=outPos.z;
-            vertex.uv[0]=input.uv.x;vertex.uv[1]=1.0f-input.uv.y;
-            if(doLight) {
-                shadeVertex(sc,vertex,sub,index,world,normal,alreadyWorldNorm,normalMat,baseAmbient,baseMid,sameAll,sameSatDiff,approxOneTex,maxR,maxB);
-            } else {
-                setVertexColor(vertex,input.color.r,input.color.g,input.color.b,input.color.a);
+            const float noLightMid=noLights?std::max(0.0f,std::min(baseMid,1.0f)):0.0f;
+            const float noLightWR=noLights?std::max(std::min(1.0f-noLightMid,baseAmbient),0.0f):0.0f;
+            const float noLightScalar=sameAll?(noLightWR+noLightMid):(noLightWR*0.6f+noLightMid);
+            for(size_t index=0;index<vCount;++index) {
+                const auto& input=sub.vertices[index];auto& vertex=out[index];
+                glm::vec3 position=input.pos;
+                glm::vec3 normal=input.normal;
+                if(hasActivePoses) {
+                    for(const auto& ap:sc.activePoses) {
+                        size_t delta=(size_t(sub.baseVertex)+index)*size_t(glob.poseCount)+ap.index;
+                        if(delta<glob.poseDpos.size())position+=glm::vec3(glob.poseDpos[delta])*ap.weight;
+                    }
+                }
+                bool alreadyWorldNorm=false;
+                if(hasSkin) {
+                    glm::vec3 skPos(0),skNorm(0);float total=0;
+                    for(unsigned b=0;b<4;++b) {
+                        float w=input.boneWeights[b];
+                        if(w!=0) {
+                            size_t bone=input.boneIndices[b];
+                            if(bone<nBones) {
+                                const glm::mat4& bm=set.boneMatrices[bone];
+                                if(w==1.0f && total==0.0f) {
+                                    skPos=transformPoint(bm,position);
+                                    if(doLight && !noLights)skNorm=boneNorms[bone]*normal;
+                                    total=1.0f;break;
+                                }
+                                skPos+=transformPoint(bm,position)*w;
+                                if(doLight && !noLights)skNorm+=boneNorms[bone]*normal*w;
+                                total+=w;
+                            }
+                        }
+                    }
+                    if(total>0) {position=skPos;if(doLight && !noLights){normal=skNorm;alreadyWorldNorm=true;}}
+                }
+                glm::vec3 world(0);
+                if(needWorld)world=transformPoint(packet.model,position);
+                const glm::vec3& outPos=bakeWorld?world:position;
+                vertex.position[0]=outPos.x;vertex.position[1]=outPos.y;vertex.position[2]=outPos.z;
+                vertex.uv[0]=input.uv.x;vertex.uv[1]=1.0f-input.uv.y;
+                if(noLights) {
+                    const float base=(input.color.r+input.color.g+input.color.b)*(1.0f/3.0f);
+                    if(sameAll || approxOneTex) {
+                        const float s=std::min(1.0f,noLightScalar*base);
+                        setVertexColor(vertex,s,s,s,input.color.a);
+                    } else {
+                        setVertexColor(vertex,noLightWR*base,noLightMid*base,0.0f,input.color.a);
+                        if(vertex.color[0]>maxR)maxR=vertex.color[0];
+                    }
+                } else if(allDirectional) {
+                    shadeVertexDir(sc,vertex,sub,index,normal,alreadyWorldNorm||useLocalDir,normalMat,baseAmbient,baseMid,anyHighlight,sameAll,sameSatDiff,approxOneTex,maxR,maxB);
+                } else if(doLight) {
+                    shadeVertex(sc,vertex,sub,index,world,normal,alreadyWorldNorm,normalMat,baseAmbient,baseMid,sameAll,sameSatDiff,approxOneTex,maxR,maxB);
+                } else {
+                    setVertexColor(vertex,input.color.r,input.color.g,input.color.b,input.color.a);
+                }
+                if(vertex.color[3]>0 && vertex.color[3]<230)softAlpha=true;
             }
-            if(vertex.color[3]>0 && vertex.color[3]<230)softAlpha=true;
         }
         if(lit && hasThreeWayTex && staticTex) {
             if(sameAll || approxOneTex) {
@@ -1175,8 +1307,15 @@ class CaneRuntimeGraphics {
         const auto& images=group.pshd->shdk==SHDK_ThreeWay?tex.ambientImageIndex:tex.diffuseImageIndex;
         const int table=std::clamp(group.cqwTexture,0,32);
         if(!table || images.empty())return;
+        const size_t wantVerts=size_t(job.maxBlips)*6u;
+        if(outVerts.capacity()<wantVerts)outVerts.reserve(wantVerts);
         const auto curve=[](const CLQ& q,float t) {return q.g0+t*(q.g1+t*q.g2);};
         const glm::mat3 modelRot(packet.model);
+        const bool isIdentity=(packet.model[0][0]==1.0f && packet.model[1][1]==1.0f && packet.model[2][2]==1.0f &&
+                               packet.model[3][0]==0.0f && packet.model[3][1]==0.0f && packet.model[3][2]==0.0f &&
+                               packet.model[0][1]==0.0f && packet.model[0][2]==0.0f &&
+                               packet.model[1][0]==0.0f && packet.model[1][2]==0.0f &&
+                               packet.model[2][0]==0.0f && packet.model[2][1]==0.0f);
         const bool additive=(group.pshd->grfshd&1)!=0;
         const int colors=std::clamp(group.crgba,0,32);
         const glm::vec3 right=frameCamRight,up=frameCamUp;
@@ -1200,7 +1339,7 @@ class CaneRuntimeGraphics {
                 }
                 color.a*=alpha;
                 const uint8_t pcol[4]={packByte(color.r),packByte(color.g),packByte(color.b),packByte(color.a)};
-                glm::vec3 center=glm::vec3(packet.model*glm::vec4(pos.x,pos.y,pos.z,1));
+                glm::vec3 center=isIdentity?glm::vec3(pos.x,pos.y,pos.z):transformPoint(packet.model,glm::vec3(pos.x,pos.y,pos.z));
                 glm::vec3 horizontal=right*scale,vertical=up*scale;
                 if(group.blipok==BLIPOK_Rolling) {
                     float c=std::cos(extra.radRoll),s=std::sin(extra.radRoll);
@@ -1210,21 +1349,33 @@ class CaneRuntimeGraphics {
                     glm::vec3 line=modelRot*glm::vec3(v.x,v.y,v.z)*(group.rSFlying*g_clock.dt);
                     glm::vec2 screen(glm::dot(line,right),glm::dot(line,up));float length=glm::length(screen);
                     if(length>.0001f) {
-                        horizontal=(right*(-screen.y/length)+up*(screen.x/length))*std::abs(scale);
-                        if(length<2*std::abs(scale))line+=(right*screen.x+up*screen.y)*((2*std::abs(scale)-length)/length);
+                        const float invLen=1.0f/length;
+                        horizontal=(right*(-screen.y*invLen)+up*(screen.x*invLen))*std::abs(scale);
+                        if(length<2*std::abs(scale))line+=(right*screen.x+up*screen.y)*((2*std::abs(scale)-length)*invLen);
                     } else line=up*(2*std::abs(scale));
                     center+=line*.5f;vertical=line*.5f;
                 }
+                const size_t base=outVerts.size();
                 if(outDraws.empty() || outDraws.back().tex!=pt || outDraws.back().additive!=additive)
-                    outDraws.push_back({unsigned(outVerts.size()),0,pt,additive,0});
+                    outDraws.push_back({unsigned(base),0,pt,additive,0});
                 if(pcol[3]>outDraws.back().maxAlpha)outDraws.back().maxAlpha=pcol[3];
-                static constexpr float corners[6][2]={{-1,-1},{1,-1},{-1,1},{-1,1},{1,-1},{1,1}};
-                for(const auto& c:corners) {
-                    Vertex vx;glm::vec3 point=center+horizontal*c[0]+vertical*c[1];
-                    std::memcpy(vx.position,&point,sizeof vx.position);std::memcpy(vx.color,pcol,4);
-                    vx.uv[0]=c[0]*.5f+.5f;vx.uv[1]=1-(c[1]*.5f+.5f);
-                    outVerts.push_back(vx);
-                }
+                const glm::vec3 bl=center-horizontal-vertical;
+                const glm::vec3 br=center+horizontal-vertical;
+                const glm::vec3 tl=center-horizontal+vertical;
+                const glm::vec3 tr=center+horizontal+vertical;
+                outVerts.resize(base+6);
+                Vertex* dst=outVerts.data()+base;
+                auto writeV=[&](Vertex& vx,const glm::vec3& pt3,float u,float v) {
+                    vx.position[0]=pt3.x;vx.position[1]=pt3.y;vx.position[2]=pt3.z;
+                    std::memcpy(vx.color,pcol,4);
+                    vx.uv[0]=u;vx.uv[1]=v;
+                };
+                writeV(dst[0],bl,0.0f,1.0f);
+                writeV(dst[1],br,1.0f,1.0f);
+                writeV(dst[2],tl,0.0f,0.0f);
+                dst[3]=dst[2];
+                dst[4]=dst[1];
+                writeV(dst[5],tr,1.0f,0.0f);
                 outDraws.back().count+=6;++emitted;
             }
         }
@@ -1340,20 +1491,22 @@ class CaneRuntimeGraphics {
     unsigned drainWave(WorkerScratch& sc) {
         const WaveMode mode=waveMode;
         const uint32_t total=waveTotalJobs;
-        const uint32_t nCel=uint32_t(celJobs.size());
+        const uint32_t nPart=uint32_t(particleJobs.size());
         const uint32_t nAnim=uint32_t(animJobs.size());
-        const uint32_t nHud=uint32_t(hudJobs.size());
+        const uint32_t nCel=uint32_t(celJobs.size());
         const uint32_t nCaster=uint32_t(casterJobs.size());
         unsigned done=0;
         for(;;) {
             uint32_t id=__atomic_fetch_add(&waveNextJob,1u,__ATOMIC_RELAXED);
             if(id>=total)break;
             if(mode==WaveMode::Prep1) {
-                if(id<nCel)runCelJob(sc,id);
-                else if(id<nCel+nAnim)runAnimJob(sc,id-nCel);
-                else if(id<nCel+nAnim+nHud)runHudJob(id-nCel-nAnim);
-                else if(id<nCel+nAnim+nHud+nCaster)runCasterJob(sc,id-nCel-nAnim-nHud);
-                else runParticleJob(id-nCel-nAnim-nHud-nCaster);
+                // Schedule heaviest jobs (particle groups, animated skinning) first
+                // so no large straggler starts at the tail of Wave 1.
+                if(id<nPart)runParticleJob(id);
+                else if(id<nPart+nAnim)runAnimJob(sc,id-nPart);
+                else if(id<nPart+nAnim+nCel)runCelJob(sc,id-nPart-nAnim);
+                else if(id<nPart+nAnim+nCel+nCaster)runCasterJob(sc,id-nPart-nAnim-nCel);
+                else runHudJob(id-nPart-nAnim-nCel-nCaster);
             } else if(mode==WaveMode::ShadowClip) {
                 runShadowJob(sc,id);
             }
@@ -1386,7 +1539,10 @@ class CaneRuntimeGraphics {
         APT_GetAppCpuTimeLimit(&actualLimit);
         s32 mainPrio=0x30;
         svcGetThreadPriority(&mainPrio,CUR_THREAD_HANDLE);
-        s32 workerPrio=std::clamp<s32>(mainPrio,0x18,0x3F);
+        // Keep render workers strictly lower priority than audio/DSP threads
+        // (OpenDSP workers run at mainPrio - 1) and the main thread so audio
+        // never stutters under heavy render load.
+        s32 workerPrio=std::clamp<s32>(mainPrio+2,0x18,0x3F);
         const int candidates[2]={isNew3ds?2:1,isNew3ds?1:-1};
         workerCount=0;
         for(int c=0;c<2;++c) {
@@ -2054,6 +2210,8 @@ public:
             if(frameLights.size()<MAX_LIGHTS)frameLights.push_back(makePreLight(light));
             if(light->fDynamic)caneDynamicLights.push_back(light);
         }
+        frameDirLightCount=size_t(std::partition(frameLights.begin(),frameLights.end(),
+            [](const PreLight& pl){return pl.kind==LIGHTK_Direction;})-frameLights.begin());
         if(frame<=2)std::fprintf(stderr,"frame %u: render world\n",frame);
         if(frame<=2)std::fprintf(stderr,"heap used=%d free=%d\n",mallinfo().uordblks,mallinfo().fordblks);
         u64 t0=osGetTime();
@@ -2890,7 +3048,8 @@ public:
                         float scale=1.0f;
                         if(!d.worldBaked) {
                             const glm::mat3 r(d.material->model);
-                            scale=std::max({glm::length(r[0]),glm::length(r[1]),glm::length(r[2])});
+                            const float maxLenSq=std::max({glm::dot(r[0],r[0]),glm::dot(r[1],r[1]),glm::dot(r[2],r[2])});
+                            scale=std::sqrt(maxLenSq);
                         } else if(d.material->pglob) {
                             scale=d.material->pglob->rSubglobRadius;
                         }
@@ -2909,6 +3068,26 @@ public:
         };
         for(int rp=0;rp<RP_Max;++rp)if(!phaseBuckets[rp].empty())resolveDrawKinds(phaseBuckets[rp]);
         if(!tvDraws.empty())resolveDrawKinds(tvDraws);
+        // BinaryCutout draws are opaque + depth-writing + alpha-tested (>=128),
+        // so sorting contiguous runs by texture/buffer cuts C3D_TexBind overhead
+        // without changing the order of any soft-alpha or additive cutouts.
+        for(RP rp:{RP_Cutout,RP_CutoutAfterProjVolume}) {
+            auto& draws=phaseBuckets[rp];
+            for(size_t first=0;first<draws.size();) {
+                if(draws[first].kind!=DrawKind::BinaryCutout) {++first;continue;}
+                size_t end=first+1;
+                while(end<draws.size() && draws[end].kind==DrawKind::BinaryCutout)++end;
+                if(end-first>1)std::sort(draws.begin()+first,draws.begin()+end,[](const Draw& a,const Draw& b) {
+                    if(a.texMode!=b.texMode)return a.texMode<b.texMode;
+                    if(a.tex0!=b.tex0)return std::less<const void*>{}(a.tex0,b.tex0);
+                    if(a.tex1!=b.tex1)return std::less<const void*>{}(a.tex1,b.tex1);
+                    if(a.tex2!=b.tex2)return std::less<const void*>{}(a.tex2,b.tex2);
+                    if(a.bufOffset!=b.bufOffset)return a.bufOffset<b.bufOffset;
+                    return a.flipped<b.flipped;
+                });
+                first=end;
+            }
+        }
         if(batchUsed)GSPGPU_FlushDataCache(batchIndices[slot],batchUsed*sizeof(uint16_t));
         if(frame%120==0)std::fprintf(stderr,"Native render savings: animated-draws=%u per-eye outline-small=%u outline-reduced=%u shadows-skipped=%u live-skip=%u\n",animatedDrawsSaved,outlineLodSkipped,outlineLodReduced,shadowMapsSkipped,liveLightSkipped);
         size_t casterJobCursor=0;
