@@ -212,7 +212,8 @@ static bool prepare(const std::vector<uint8_t>& rgb,unsigned width,unsigned heig
         bool ok=std::fwrite(&digest,1,sizeof digest,file)==sizeof digest &&
             std::fwrite(result.data(),1,result.size(),file)==result.size();
         ok=std::fclose(file)==0 && ok;
-        if(!ok || std::rename(temp,path)!=0)std::remove(temp);
+        if(ok) {std::remove(path);if(std::rename(temp,path)!=0)std::remove(temp);}
+        else std::remove(temp);
     }
     return true;
 }
@@ -263,6 +264,7 @@ static void saveBundle(const char* path,uint64_t fingerprint,const std::vector<P
     }
     ok=ok && std::fwrite(&digest,1,sizeof digest,file)==sizeof digest;
     ok=std::fclose(file)==0 && ok;
-    if(!ok || std::rename(temp,path)!=0)std::remove(temp);
+    if(ok) {std::remove(path);if(std::rename(temp,path)!=0)std::remove(temp);}
+    else std::remove(temp);
 }
 } // namespace cane_texture_etc

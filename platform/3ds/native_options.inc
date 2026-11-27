@@ -1,6 +1,10 @@
 // Native options live beside the launcher rather than in the desktop config.
 // Keep this separate from game saves and the existing audio configuration.
 extern void CaneStopTrophyChime3ds();
+namespace cane_save3ds {
+bool Recover(const std::string&);
+bool Replace(const std::string&, const std::string&);
+}
 static bool caneTrophyPopups=false;
 bool CaneTrophyPopups3ds(){return caneTrophyPopups;}
 static bool caneNewButtonIcons=true;
@@ -42,7 +46,9 @@ bool CaneCameraInvertY3ds() {return caneCameraInvertY;}
 bool CaneBinocInvertX3ds() {return caneBinocInvertX;}
 bool CaneBinocInvertY3ds() {return caneBinocInvertY;}
 void CaneLoadNativeOptions3ds() {
-    if(FILE* file=std::fopen("sdmc:/3ds/ThieviusCTR/native-options.cfg","r")) {
+    const char* path="sdmc:/3ds/ThieviusCTR/native-options.cfg";
+    cane_save3ds::Recover(path);
+    if(FILE* file=std::fopen(path,"r")) {
         char key[64];int value;
         while(std::fscanf(file,"%63s %d",key,&value)==2)
             if(std::strcmp(key,"button_icons")==0 && (value==0 || value==1))caneNewButtonIcons=value!=0;
@@ -96,7 +102,7 @@ static bool CaneSaveNativeOptions3ds() {
         written=written && std::fprintf(file,"intro_seen %d\nskip_intro %d\n",int(caneIntroSeen),int(caneSkipIntro))>0;
         written=written && std::fprintf(file,"trophy_popups %d\n",int(caneTrophyPopups))>0;
         bool closed=std::fclose(file)==0;
-        if(written && closed)saved=std::rename(temp,path)==0;
+        if(written && closed)saved=cane_save3ds::Replace(temp,path);
         if(!saved)std::remove(temp);
     }
     return saved;

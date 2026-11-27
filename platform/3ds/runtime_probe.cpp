@@ -53,6 +53,7 @@ void stage(const char* text) {
         bottom.bar(156,0,0);present();
     }
     if(logFile) {fprintf(logFile,"%s\n",text);fflush(logFile);}
+    fflush(stderr);
 }
 }
 namespace {
@@ -65,7 +66,7 @@ _Unwind_Reason_Code traceFrame(_Unwind_Context* context,void* count) {
 void unexpectedExit(const char* operation,int code,void* caller) {
     if(normalShutdown)return;
     char message[128];snprintf(message,sizeof message,"%s code=%d caller=%p",operation,code,caller);
-    stage(message);unsigned n=0;_Unwind_Backtrace(traceFrame,&n);if(logFile)fflush(logFile);
+    stage(message);unsigned n=0;_Unwind_Backtrace(traceFrame,&n);if(logFile)fflush(logFile);fflush(stderr);
 }
 }
 extern "C" {
@@ -104,8 +105,17 @@ int main() {
         mkdir("sdmc:/3ds/ThieviusCTR", 0777);
     }
     logFile=fopen("sdmc:/3ds/ThieviusCTR/runtime.log","w");
+    bool liveProbeLog=false;
+    if(FILE* flag=fopen("sdmc:/3ds/ThieviusCTR/probe-live-log.flag","r")) {
+        liveProbeLog=true;
+        fclose(flag);
+    }
+    if(logFile && !liveProbeLog)setvbuf(logFile,nullptr,_IOFBF,16384);
     freopen("sdmc:/3ds/ThieviusCTR/runtime-stderr.log","w",stderr);
-    setvbuf(stderr,nullptr,_IONBF,0);
+    // Buffer stderr in RAM instead of unbuffered (_IONBF): synchronous SD
+    // writes on real 3DS stall gameplay for 8-70 ms per fprintf call.
+    // Safe non-gameplay points (stage, level load, crash, exit) flush it.
+    setvbuf(stderr,nullptr,_IOFBF,16384);
     {
         CaneLauncherLevelRef levelRefs[46]{};
         for(unsigned i=0;i<46;++i) {
@@ -312,10 +322,10 @@ int main() {
                 if(g_pjt) {
                     const auto p=g_pjt->xf.posWorld;
                     if(int(g_pjt->jts)!=lastState) {
-                        if(logFile) {fprintf(logFile,"state=%d->%d update=%u pos=%.3f,%.3f,%.3f\n",lastState,int(g_pjt->jts),frames,p.x,p.y,p.z);fflush(logFile);}
+                        if(logFile && liveProbeLog) {fprintf(logFile,"state=%d->%d update=%u pos=%.3f,%.3f,%.3f\n",lastState,int(g_pjt->jts),frames,p.x,p.y,p.z);fflush(logFile);}
                         lastState=int(g_pjt->jts);
                     }
-                    if(g_pjt->jts==JTS_Jump && frames%3==0 && logFile)
+                    if(g_pjt->jts==JTS_Jump && frames%3==0 && logFile && liveProbeLog)
                         fprintf(logFile,"jump update=%u pos=%.3f,%.3f,%.3f\n",frames,p.x,p.y,p.z);
                     if(!std::isfinite(p.x)||!std::isfinite(p.y)||!std::isfinite(p.z))
                         throw std::runtime_error("Non-finite player position");
@@ -339,7 +349,7 @@ int main() {
                     unsigned notes=0,active=0,bytes=0,drops=0;CaneMusicStats3ds(&notes,&active,&bytes,&drops);
                     fprintf(logFile,"music notes=%u active=%u sample_bytes=%u dropped=%u\n",notes,active,bytes,drops);
                     fprintf(logFile,"audio voices=%u failures=%u frame_ms=%.1f gpu_ms=%.2f dsp_frames=%lu hud_vertices=%u\n",played,failed,graphics.frameMs,graphics.gpuMs,(unsigned long)ndspGetFrameCount(),graphics.hudVertexCount);
-                    fflush(logFile);
+                    if(liveProbeLog)fflush(logFile);
                 }
                 report=now;
             }
@@ -357,6 +367,7 @@ int main() {
                 if(firstLevelFrame) {
                     std::fprintf(stderr,"Level first draw ms: %llu level=0x%03X (includes visible texture/mesh preparation)\n",
                         (unsigned long long)(osGetTime()-firstDrawStart),level?unsigned(level->levelID):0u);
+                    std::fflush(stderr);
                     firstLevelFrame=false;
                 }
                 perfMonitor.setTargetFps(CaneRenderCap3ds());
@@ -401,6 +412,7 @@ int main() {
     stage("Shutdown: services");
     normalShutdown=true;
     if(logFile) {fclose(logFile);logFile=nullptr;}
+    fflush(stderr);
     perfMonitor.restoreStdout();
     if(sd)fsExit();gfxExit();
     // The desktop engine has global owners whose destructors access its world,

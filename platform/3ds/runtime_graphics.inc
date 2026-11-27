@@ -3089,7 +3089,6 @@ public:
             }
         }
         if(batchUsed)GSPGPU_FlushDataCache(batchIndices[slot],batchUsed*sizeof(uint16_t));
-        if(frame%120==0)std::fprintf(stderr,"Native render savings: animated-draws=%u per-eye outline-small=%u outline-reduced=%u shadows-skipped=%u live-skip=%u\n",animatedDrawsSaved,outlineLodSkipped,outlineLodReduced,shadowMapsSkipped,liveLightSkipped);
         size_t casterJobCursor=0;
         for(size_t mapIndex=0;mapIndex<caneCasters.size();++mapIndex) {
             const auto& caster=caneCasters[mapIndex];SHADOW* shadow=caster.owner->pshadowGen;
@@ -3179,20 +3178,7 @@ public:
             }
         }
         pk[6]=svcGetSystemTick();
-        if(frame%120==0)std::fprintf(stderr,"Native effects: particles=%u shadow-maps=%u receivers=%u shadow-volumes=%lu\n",particles,unsigned(shadowPasses.size()),overlayVertices/3,
-            (unsigned long)phaseBuckets[RP_ProjVolume].size());
-        if(frame%120==0)std::fprintf(stderr,"Native cel: packets=%u segments=%u lights=%u materials=%u\n",unsigned(caneCelPackets.size()),outlineSegments,unsigned(frameLights.size()),threeWayCount);
         hudVertexCount=0;for(const auto& hud:hudDraws)hudVertexCount+=hud.count;
-        if(frame%120==0)std::fprintf(stderr,"Native binocular UI: state=%d portraits=%u vertices=%u\n",int(g_binoc.binocs),unsigned(tvDraws.size()),hudVertexCount);
-        if(frame%120==0) {
-            unsigned coins=0,health=0,dialogue=0,portraits=0;
-            for(const auto& h:hudDraws) {
-                if(h.layer==CaneHudLayer::Coins)coins+=h.count;
-                if(h.layer==CaneHudLayer::Health)health+=h.count;
-                if(h.layer==CaneHudLayer::Dialogue) {dialogue+=h.count;if(h.tv)++portraits;}
-            }
-            std::fprintf(stderr,"Bottom HUD: active=%d coins=%u health=%u dialogue=%u portraits=%u startup=%d\n",int(caneBottomActive),coins,health,dialogue,portraits,int(caneStartupPresentation));
-        }
         unsigned wmOverlayFirst=0;
         if(!phaseBuckets[RP_WorldMap].empty()) {
             float pillarboxOpacity=1.0f;
@@ -3879,9 +3865,29 @@ public:
         inFrameCmd=false;
         u64 tDrawEnd=osGetTime();
         C3D_FrameEnd(0);u64 tEnd=osGetTime();frameMs=float(tEnd-begin);gpuMs=C3D_GetDrawingTime();drawCmdMs=C3D_GetProcessingTime();drawCallCount=drawCalls;
-        if(frame%120==0)std::fprintf(stderr,"Texture memory: vram=%lu/%luKiB linear=%luKiB ETC1=%u saved=%luKiB targets=%dKiB shadows=%uKiB\n",
-            (unsigned long)(vramTextureBytes/1024),(unsigned long)(vramTextureBudget(displayMode)/1024),(unsigned long)(fcramTextureBytes/1024),etcTexCount,(unsigned long)(textureSavedBytes/1024),displayMode==0?750:displayMode==3?3822:displayMode==6?3000:1500,unsigned(std::count_if(std::begin(shadowMaps),std::end(shadowMaps),[](const ShadowMap& map){return map.texture.data!=nullptr;}))*shadowSize*shadowSize*6/1024);
-        if(frame%120==0)std::fprintf(stderr,"Profile ms: upd=%.1f sw=%lu prep=%lu begin=%lu draw=%lu end=%lu dynVerts=%lu draws=%u merged=%u calls=%u flat=%u/%u/%u | ui=%.1f blots=%.1f setup=%.1f w1=%.1f shset=%.1f w2=%.1f fin=%.1f wk=[%u:%.1f,%u:%.1f] vram=%u/%u\n",double(updateMs),(unsigned long)(tSw-t0),(unsigned long)(tMesh-tSw),(unsigned long)(tBegin-tMesh),(unsigned long)(tDrawEnd-tBegin),(unsigned long)(tEnd-tDrawEnd),(unsigned long)used,totalDraws,mergedCallCount,drawCalls,animFlattens,movedFlattens,newFlattens,double(pk[1]-pk[0])/268111.856,double(pk[2]-pk[1])/268111.856,double(pk[3]-pk[2])/268111.856,double(pk[4]-pk[3])/268111.856,double(pk[5]-pk[4])/268111.856,double(pk[6]-pk[5])/268111.856,double(pk[7]-pk[6])/268111.856,workerCount>0?workers[0].jobsDone:0u,workerCount>0?double(workers[0].busyTicks)/268111.856:0.0,workerCount>1?workers[1].jobsDone:0u,workerCount>1?double(workers[1].busyTicks)/268111.856:0.0,vramTexCount,vramTexCount+fcramTexCount);
+        if(frame%120==0) {
+            unsigned coins=0,health=0,dialogue=0,portraits=0;
+            for(const auto& h:hudDraws) {
+                if(h.layer==CaneHudLayer::Coins)coins+=h.count;
+                if(h.layer==CaneHudLayer::Health)health+=h.count;
+                if(h.layer==CaneHudLayer::Dialogue) {dialogue+=h.count;if(h.tv)++portraits;}
+            }
+            std::fprintf(stderr,
+                "Native render savings: animated-draws=%u per-eye outline-small=%u outline-reduced=%u shadows-skipped=%u live-skip=%u\n"
+                "Native effects: particles=%u shadow-maps=%u receivers=%u shadow-volumes=%lu\n"
+                "Native cel: packets=%u segments=%u lights=%u materials=%u\n"
+                "Native binocular UI: state=%d portraits=%u vertices=%u\n"
+                "Bottom HUD: active=%d coins=%u health=%u dialogue=%u portraits=%u startup=%d\n"
+                "Texture memory: vram=%lu/%luKiB linear=%luKiB ETC1=%u saved=%luKiB targets=%dKiB shadows=%uKiB\n"
+                "Profile ms: upd=%.1f sw=%lu prep=%lu begin=%lu draw=%lu end=%lu dynVerts=%lu draws=%u merged=%u calls=%u flat=%u/%u/%u | ui=%.1f blots=%.1f setup=%.1f w1=%.1f shset=%.1f w2=%.1f fin=%.1f wk=[%u:%.1f,%u:%.1f] vram=%u/%u\n",
+                animatedDrawsSaved,outlineLodSkipped,outlineLodReduced,shadowMapsSkipped,liveLightSkipped,
+                particles,unsigned(shadowPasses.size()),overlayVertices/3,(unsigned long)phaseBuckets[RP_ProjVolume].size(),
+                unsigned(caneCelPackets.size()),outlineSegments,unsigned(frameLights.size()),threeWayCount,
+                int(g_binoc.binocs),unsigned(tvDraws.size()),hudVertexCount,
+                int(caneBottomActive),coins,health,dialogue,portraits,int(caneStartupPresentation),
+                (unsigned long)(vramTextureBytes/1024),(unsigned long)(vramTextureBudget(displayMode)/1024),(unsigned long)(fcramTextureBytes/1024),etcTexCount,(unsigned long)(textureSavedBytes/1024),displayMode==0?750:displayMode==3?3822:displayMode==6?3000:1500,unsigned(std::count_if(std::begin(shadowMaps),std::end(shadowMaps),[](const ShadowMap& map){return map.texture.data!=nullptr;}))*shadowSize*shadowSize*6/1024,
+                double(updateMs),(unsigned long)(tSw-t0),(unsigned long)(tMesh-tSw),(unsigned long)(tBegin-tMesh),(unsigned long)(tDrawEnd-tBegin),(unsigned long)(tEnd-tDrawEnd),(unsigned long)used,totalDraws,mergedCallCount,drawCalls,animFlattens,movedFlattens,newFlattens,double(pk[1]-pk[0])/268111.856,double(pk[2]-pk[1])/268111.856,double(pk[3]-pk[2])/268111.856,double(pk[4]-pk[3])/268111.856,double(pk[5]-pk[4])/268111.856,double(pk[6]-pk[5])/268111.856,double(pk[7]-pk[6])/268111.856,workerCount>0?workers[0].jobsDone:0u,workerCount>0?double(workers[0].busyTicks)/268111.856:0.0,workerCount>1?workers[1].jobsDone:0u,workerCount>1?double(workers[1].busyTicks)/268111.856:0.0,vramTexCount,vramTexCount+fcramTexCount);
+        }
         return packetCount;
     }
     void showLoading(const char* text="Loading...") {

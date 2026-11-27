@@ -14,6 +14,11 @@
 #include <3ds.h>
 #include <opendsp.h>
 
+namespace cane_save3ds {
+bool Recover(const std::string&);
+bool Replace(const std::string&, const std::string&);
+}
+
 IEXC g_iexcHyst = -100, s_iexcCurHigh = 0;
 int s_cframeExcitementHyst = 0;
 int s_sfxidLast = -1, g_fSneakyFeet = 0;
@@ -909,7 +914,9 @@ static void onAptAudioEvent(APT_HookType hook, void*) {
 }
 
 bool CaneStartAudio3ds() {
-    if (FILE* file = std::fopen("sdmc:/3ds/ThieviusCTR/audio-backend.cfg", "r")) {
+    const char* cfgPath = "sdmc:/3ds/ThieviusCTR/audio-backend.cfg";
+    cane_save3ds::Recover(cfgPath);
+    if (FILE* file = std::fopen(cfgPath, "r")) {
         int choice = 0, wide = 1;
         float mv = 1.0f, sv = 1.0f, dv = 1.0f;
         int fields = std::fscanf(file, "%d %f %f %f %d", &choice, &mv, &sv, &dv, &wide);
@@ -1480,7 +1487,7 @@ static void CaneSaveAudioConfig() {
         const bool ok = std::fprintf(file, "%d %.3f %.3f %.3f %d\n",
             requestedDsp, music, sfx, dialogue, int(stereo)) > 0;
         const bool closed = (std::fclose(file) == 0);
-        if (!(ok && closed && std::rename(temp, path) == 0)) std::remove(temp);
+        if (!(ok && closed && cane_save3ds::Replace(temp, path))) std::remove(temp);
     }
 }
 

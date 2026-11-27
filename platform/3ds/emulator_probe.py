@@ -14,6 +14,7 @@ if args.runtime:
         (out/'data/azaharplus-emu/sdmc/3ds/ThieviusCTR'/logname).unlink(missing_ok=True)
 sdmc_root=out/'data/azaharplus-emu/sdmc/3ds/ThieviusCTR'
 sdmc_root.mkdir(parents=True,exist_ok=True)
+if args.runtime:(sdmc_root/'probe-live-log.flag').write_text('1\n')
 def link_asset_tree(name):
     source=ROOT/'local/data'/name
     if name=='Cutscenes' and os.environ.get('THIEVIUS_FMV_TEST_DIR'):
@@ -365,13 +366,19 @@ with (out/'xvfb.log').open('w') as xlog,(out/'azahar.log').open('w') as log:
                 if args.buttons:print('PASS original menus, music DSP voices preserved across switch, intro and clean exit',flush=True)
                 else:print('PASS original Sound/title menus, music DSP voices preserved across switch, intro, NDSP fallback and clean exit',flush=True)
                 raise SystemExit(0)
+            if args.effects and args.stereo_bottom:
+                # Enabled bottom counters must survive the retail auto-hide
+                # timer without pausing or collecting anything.
+                time.sleep(5)
+                subprocess.run(['import','-window','root',str(out/'bottom-counters.png')],env=env,check=True)
+            subprocess.run(['xdotool','keydown','Up'],env=env,check=True);time.sleep(2)
+            subprocess.run(['xdotool','keyup','Up'],env=env,check=True);time.sleep(1)
+            subprocess.run(['import','-window','root',str(out/'moved.png')],env=env,check=True)
+            subprocess.run(['xdotool','keydown','n+m' if args.runtime else 'm'],env=env,check=True);time.sleep(.2)
+            subprocess.run(['xdotool','keyup','n+m' if args.runtime else 'm'],env=env,check=True);time.sleep(3)
+            subprocess.run(['import','-window','root',str(out/'after-start.png')],env=env,check=True)
             if args.effects:
                 import re
-                if args.stereo_bottom:
-                    # Enabled bottom counters must survive the retail auto-hide
-                    # timer without pausing or collecting anything.
-                    time.sleep(5)
-                    subprocess.run(['import','-window','root',str(out/'bottom-counters.png')],env=env,check=True)
                 effects=(out/'data/azaharplus-emu/sdmc/3ds/ThieviusCTR/runtime-stderr.log').read_text()
                 contents=(out/'data/azaharplus-emu/sdmc/3ds/ThieviusCTR/runtime.log').read_text()
                 if args.stereo_bottom:
@@ -391,12 +398,6 @@ with (out/'xvfb.log').open('w') as xlog,(out/'azahar.log').open('w') as log:
                 if not cel or not any(row[1]>0 and row[2]>0 and row[3]>0 for row in cel):raise RuntimeError('No native silhouette edges or lit three-way materials rendered')
                 if 'Controller icon atlases ready: PS2 + New 3DS (256x128)' not in effects:raise RuntimeError('Controller atlases were not prepared for the binocular HUD')
                 print('PASS native particles, animated shadows, lights, three-way materials and silhouette edges',flush=True)
-            subprocess.run(['xdotool','keydown','Up'],env=env,check=True);time.sleep(2)
-            subprocess.run(['xdotool','keyup','Up'],env=env,check=True);time.sleep(1)
-            subprocess.run(['import','-window','root',str(out/'moved.png')],env=env,check=True)
-            subprocess.run(['xdotool','keydown','n+m' if args.runtime else 'm'],env=env,check=True);time.sleep(.2)
-            subprocess.run(['xdotool','keyup','n+m' if args.runtime else 'm'],env=env,check=True);time.sleep(3)
-            subprocess.run(['import','-window','root',str(out/'after-start.png')],env=env,check=True)
     finally:
         if emulator is not None and emulator.poll() is None:
             emulator.terminate()
