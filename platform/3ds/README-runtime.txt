@@ -19,16 +19,16 @@ Save slots live in Saves/ and are kept when replacing the launcher files.
   START: play from the title / open the in-game pause menu
   SELECT: original title options
   SELECT + START: exit this application
-All added settings use the game's own Options menu, grouped into Sound,
-Graphics and Controls. Graphics > Button icons defaults to New 3DS;
-select PS2 to use the original artwork. Controls contains Dialogue Skip
-Controls, Swap B/A (defaults On; swaps physical B/A with PS Cross/Circle as
-well as displayed B/A or X/O icons), Camera Invert X/Y (X defaults On) and
-Binoc Invert X/Y (Y defaults On). Left/Right or accept changes these
-settings; native-options.cfg saves them between launches.
-Graphics also offers normal 400x240, 800x240 2D, per-eye stereoscopic 3D,
-800x480 internal supersampling, plus
-Original/Low shadow detail and a separate 3D settings page (enable, strength,
+All added settings use the game's own Options menu, grouped into Video, Sound,
+Controls, Interface & HUD and Debug. Interface & HUD > Button icons defaults
+to New 3DS; select PS2 to use the original artwork. Controls contains Swap B/A
+(defaults On; swaps physical B/A with PS Cross/Circle as well as displayed B/A
+or X/O icons), Camera Invert X/Y (X defaults On), Binoc Invert X/Y (Y defaults
+On) and Gyro aiming... (Dialogue skip is under Interface & HUD). Left/Right or
+accept changes these settings; native-options.cfg saves them between launches.
+Video offers normal 400x240, 800x240 2D, per-eye stereoscopic 3D,
+800x480 internal supersampling, 30/60 FPS render cap, Draw Distance,
+Original/Low Shadows and a separate 3D settings submenu (enable, strength,
 automatic convergence, convergence distance, pop-out limit and HUD depth).
 Automatic convergence follows the camera-to-Sly distance; disabling it uses
 a fixed reference distance. These display/filter modes are
@@ -38,13 +38,13 @@ closing it skips the second eye draw. Unsupported modes fall back to 400x240;
 the emulator also falls back for 800x240 because its wide output is cropped.
 Fresh configurations default to normal stereoscopic 3D and a 30 FPS cap.
 Saved settings take precedence. Cutscene playback keeps its existing settings.
-Display also includes 3D (400x480/eye), which renders twice the vertical
+Video > Display also includes 3D (400x480/eye), which renders twice the vertical
 resolution per eye and downsamples to the panel. This uses more GPU time
 and VRAM than normal 3D. Texture storage is relocated when needed to make
 room for both eyes; if those larger targets cannot fit, normal 3D is retained.
-Graphics > Display groups the display mode and frame cap. Graphics also has
-separate 3D settings and Bottom screen submenus.
-Graphics > Bottom screen has a Coins switch and Right counter: Off/Lives/Bottles.
+Interface & HUD groups Button icons, Bottom screen (Game HUD or System
+monitor), Bottom coins, Bottom counter (Lives/Bottles/Off), Dialogue skip,
+Skip intro and Trophy popups. Debug holds Reset trophies.
 These keep counters visible at the upper corners of the bottom screen.
 Bottles shows the original bottle count/icon; bottle-free levels show 0/0.
 The game's original animated top-screen counter pop-ups still work.
@@ -62,7 +62,7 @@ use START to pause and physical controls for menus on the top screen. The title
 screen has touch buttons for Play and Options. Display: System monitor
 restores the performance monitor outside conversations.
 The startup intro plays on first use. Reaching the title enables the saved
-Graphics > Skip intro setting, which skips that sequence on later launches.
+Interface & HUD > Skip intro setting, which skips that sequence on later launches.
 Turn it Off to watch the intro again. Mission cutscenes are unaffected.
 Loading... appears in the game's font at the bottom right during level loads.
 Controls > Gyro aiming adds motion to binocular/sniper aiming without replacing
@@ -95,7 +95,7 @@ in 64 KiB steps, then consumed by the normal loader. It is optional under memory
 pressure and released as soon as the prefix has been consumed. No second live
 world is created. Model and prefetch timings are included in runtime stderr.
 
-Graphics > Bottom screen > Display: System monitor shows live FPS, CPU,
+Interface & HUD > Bottom screen: System monitor shows live FPS, CPU,
 GPU and RAM (HEAP/FCRAM/VRAM) instead of the gameplay HUD.
 The pause menu's Exit to Homebrew Launcher closes the application cleanly.
 Open Options > Sound to choose the audio backend and adjust volumes;

@@ -163,8 +163,19 @@ void DrawAttract(ATTRACT* pattract)
     const float scaleX =
         (FJapaneseContent() && g_guiStyle == GuiStyle_PS2) ? guiScale.y : guiScale.x;
     const float scaleY = guiScale.y;
-    const float dx = pattract->dx * scaleX;
+    float dx = pattract->dx * scaleX;
     const float dy = pattract->dy * scaleY;
+#ifdef __3DS__
+    if (pattract->pfont != nullptr && pattract->achzDraw[0] != '\0')
+    {
+        pattract->pfont->PushScaling(
+            pattract->rFontScale * scaleX,
+            pattract->rFontScale * scaleY);
+        CRichText measuredText(pattract->achzDraw, pattract->pfont);
+        dx = std::max(dx, measuredText.DxMaxLine() + 2.0f);
+        pattract->pfont->PopScaling();
+    }
+#endif
     float xOn = pattract->xOn;
     float yOn = pattract->yOn;
 

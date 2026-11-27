@@ -86,7 +86,9 @@ void UpdateSw(SW* psw, float dt)
         {
             dliRoot.m_ppv = reinterpret_cast<void**>(reinterpret_cast<std::byte*>(psoRoot) + dliRoot.m_ibDle);
 
-            psoRoot->pvtso->pfnUpdateSoImpacts(psoRoot);
+            if (psoRoot->pvtso->pfnUpdateSoImpacts != UpdateSoImpacts ||
+                (psoRoot->poxa != nullptr && psoRoot->poxa->pox != nullptr))
+                psoRoot->pvtso->pfnUpdateSoImpacts(psoRoot);
             psoRoot = static_cast<SO*>(*dliRoot.m_ppv);
         }
 

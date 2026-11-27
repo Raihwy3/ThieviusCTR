@@ -119,6 +119,15 @@ class CFontBrx : public CFont
 
     int m_cglyff = 0;
     std::unordered_map<uint16_t, GLYFF> m_aglyff;
+    struct GlyphTable
+    {
+        GLYFF ascii[256]{};
+        uint8_t asciiPresent[256]{};
+        std::unordered_map<uint16_t, GLYFF> extra;
+    };
+    std::shared_ptr<GlyphTable> m_pglyphTable;
+    std::size_t m_glyphTableSourceSize = 0;
+    void EnsureGlyphTable();
 
     uint32_t m_grffont = 0;
 

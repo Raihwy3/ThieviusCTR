@@ -3860,8 +3860,7 @@ void RenderAloAll(ALO* palo, CM* pcm, RO* pro)
 		(palo->grfzon & pcm->grfzon) != pcm->grfzon)
 		return;
 
-	RO ro{};
-	RO roChild{};
+	RO ro;
 
 	RO* proOrig = pro;
 
@@ -3999,81 +3998,95 @@ void RenderAloAll(ALO* palo, CM* pcm, RO* pro)
 	/*
 	 * Recursively render child ALOs.
 	 */
-	DLI dliChild{};
-	dliChild.m_pdl = &palo->dlChild;
-	dliChild.m_ibDle = palo->dlChild.ibDle;
-	dliChild.m_pdliNext = s_pdliFirst;
-	dliChild.m_ppv = reinterpret_cast<void**>(dliChild.m_pdl);
-	s_pdliFirst = &dliChild;
-
-	while (true)
+	if (palo->dlChild.pvFirst != nullptr)
 	{
-		ALO* child = static_cast<ALO*>(*dliChild.m_ppv);
+		DLI dliChild{};
+		dliChild.m_pdl = &palo->dlChild;
+		dliChild.m_ibDle = palo->dlChild.ibDle;
+		dliChild.m_pdliNext = s_pdliFirst;
+		dliChild.m_ppv = reinterpret_cast<void**>(dliChild.m_pdl);
+		s_pdliFirst = &dliChild;
 
-		if (child == nullptr)
-			break;
-
-		// Point at this child's next-link before dispatch. RemoveDlEntry can
-		// then repair the iterator if rendering reparents or removes the child.
-		dliChild.m_ppv = reinterpret_cast<void**>(
-			reinterpret_cast<char*>(child) + dliChild.m_ibDle);
-
-		if (child->pvtlo == nullptr || (child->pvtlo->grfcid & 1U) == 0)
-			continue;
-
-		if (child->pvtalo == nullptr || child->pvtalo->pfnRenderAloAll == nullptr)
-			continue;
-
-		/*
-		 * With no render override, children resolve their own world
-		 * transforms when RenderAloAll is called.
-		 */
-		if (proOrig == nullptr)
+		while (true)
 		{
-			child->pvtalo->pfnRenderAloAll(child, pcm, nullptr);
-			continue;
-		}
+			ALO* child = static_cast<ALO*>(*dliChild.m_ppv);
 
-		glm::mat4 childMatrix;
-		glm::mat4 parentMatrix;
+			if (child == nullptr)
+				break;
 
-		const bool useWorldTransform =
-			child->palox != nullptr &&
-			(child->palox->grfalox & 0x0CU) != 0;
+			// Point at this child's next-link before dispatch. RemoveDlEntry can
+			// then repair the iterator if rendering reparents or removes the child.
+			dliChild.m_ppv = reinterpret_cast<void**>(
+				reinterpret_cast<char*>(child) + dliChild.m_ibDle);
 
-		if (!useWorldTransform)
-		{
+			if (child->pvtlo == nullptr || (child->pvtlo->grfcid & 1U) == 0)
+				continue;
+
+			if (child->pvtalo == nullptr || child->pvtalo->pfnRenderAloAll == nullptr)
+				continue;
+
 			/*
-			 * Normal child: parent render matrix multiplied by the
-			 * child's local transform.
+			 * With no render override, children resolve their own world
+			 * transforms when RenderAloAll is called.
 			 */
-			LoadMatrixFromPosRot(&child->xf.pos, &child->xf.mat, &childMatrix);
-			parentMatrix = proOrig->model;
+			if (proOrig == nullptr)
+			{
+				child->pvtalo->pfnRenderAloAll(child, pcm, nullptr);
+				continue;
+			}
+
+			glm::mat4 childMatrix;
+			glm::mat4 parentMatrix;
+
+			const bool useWorldTransform =
+				child->palox != nullptr &&
+				(child->palox->grfalox & 0x0CU) != 0;
+
+			if (!useWorldTransform)
+			{
+				/*
+				 * Normal child: parent render matrix multiplied by the
+				 * child's local transform.
+				 */
+				LoadMatrixFromPosRot(&child->xf.pos, &child->xf.mat, &childMatrix);
+				parentMatrix = proOrig->model;
+			}
+			else
+			{
+				/*
+				 * Special child: convert its resolved world transform
+				 * into the current overridden parent render space.
+				 */
+				glm::mat4 parentWorldInverse;
+
+				LoadMatrixFromPosRot(&child->xf.posWorld, &child->xf.matWorld, &childMatrix);
+				LoadMatrixFromPosRotInverse(&palo->xf.posWorld, &palo->xf.matWorld, &parentWorldInverse);
+
+				parentMatrix = proOrig->model * parentWorldInverse;
+			}
+
+			RO roChild;
+			roChild.model = parentMatrix * childMatrix;
+			roChild.uAlpha = proOrig->uAlpha;
+			roChild.uFog = 0.0f;
+			roChild.darken = 1.0f;
+			roChild.grfglob = 0;
+			roChild.blotTvLight = proOrig->blotTvLight;
+			roChild.warpType = WARP_NONE;
+			roChild.warpCmat = 0;
+			roChild.warpCvtx = 0;
+			roChild.fDynamic = 0;
+			roChild.sRadius = 0.0f;
+			roChild.fDynamicLight = proOrig->fDynamicLight;
+			roChild.trlk = 0;
+			roChild.posCenter = glm::vec4(0.0f);
+			roChild.uAlphaCelBorder = proOrig->uAlphaCelBorder;
+
+			child->pvtalo->pfnRenderAloAll(child, pcm, &roChild);
 		}
-		else
-		{
-			/*
-			 * Special child: convert its resolved world transform
-			 * into the current overridden parent render space.
-			 */
-			glm::mat4 parentWorldInverse;
 
-			LoadMatrixFromPosRot(&child->xf.posWorld, &child->xf.matWorld, &childMatrix);
-			LoadMatrixFromPosRotInverse(&palo->xf.posWorld, &palo->xf.matWorld, &parentWorldInverse);
-
-			parentMatrix = proOrig->model * parentWorldInverse;
-		}
-
-		roChild = {};
-		roChild.model = parentMatrix * childMatrix;
-		roChild.uAlpha = proOrig->uAlpha;
-		roChild.uAlphaCelBorder = proOrig->uAlphaCelBorder;
-		roChild.fDynamicLight = proOrig->fDynamicLight;
-
-		child->pvtalo->pfnRenderAloAll(child, pcm, &roChild);
+		s_pdliFirst = dliChild.m_pdliNext;
 	}
-
-	s_pdliFirst = dliChild.m_pdliNext;
 
 	/*
 	 * The release build submits fast shadows whenever the radius is
@@ -4141,6 +4154,11 @@ void DupAloRo(ALO* palo, RO* proOrig, RO* proDup)
 		LoadMatrixFromPosRotScale(&palo->xf.posWorld, &palo->xf.matWorld, &g_vecOne, &proDup->model);
 		proDup->uAlpha = 1.0;
 		proDup->uAlphaCelBorder = 1.0;
+		proDup->fDynamicLight = 0;
+		proDup->blotTvLight = 0;
+		proDup->warpType = WARP_NONE;
+		proDup->warpCmat = 0;
+		proDup->warpCvtx = 0;
 	}
 	else
 	{
@@ -4150,15 +4168,24 @@ void DupAloRo(ALO* palo, RO* proOrig, RO* proDup)
 			proDup->uAlpha = proOrig->uAlpha;
 			proDup->uAlphaCelBorder = proOrig->uAlphaCelBorder;
 			proDup->fDynamicLight = proOrig->fDynamicLight;
+			proDup->blotTvLight = proOrig->blotTvLight;
+			proDup->warpType = WARP_NONE;
+			proDup->warpCmat = 0;
+			proDup->warpCvtx = 0;
 		}
 	}
 }
 
 void RenderAloGlobset(ALO* palo, CM* pcm, RO* pro)
 {
-	RPL    rpl{};
-	RPLCEL rplCel{};
-	
+	if (palo->globset.cglob <= 0)
+		return;
+
+	RPL rpl;
+	rpl.PFNDRAWRPL = nullptr;
+	rpl.streamOffset = -1;
+	rpl.fQueuedCacheWrite = false;
+
 	DupAloRo(palo, pro, &rpl.ro);
 
 	const glm::mat4 baseModel = rpl.ro.model;
@@ -4409,6 +4436,8 @@ void RenderAloGlobset(ALO* palo, CM* pcm, RO* pro)
 
 			if (cb > 0.0f)
 			{
+				RPLCEL rplCel;
+				rplCel.streamOffset = -1;
 				//rplCel.pglob = &glob;
 				rplCel.rocel.model = submitModel;
 				rplCel.rocel.celRgba = ((palo->globset.grfglobset & 2) == 0) ? g_rgbaCel : palo->globset.rgbaCel;

@@ -34,6 +34,6 @@ It does not erase game saves. Current conditions are suppressed until they stop
 being true during this session; loading an existing save on a later launch can
 earn awards again from its saved progress.
 
-Options > Debug > Trophy popups enables or disables the popup and its jingle.
+Options > Interface & HUD > Trophy popups enables or disables the popup and its jingle.
 Trophies still unlock and save; suppressed notifications are not queued for later.
 This preference is stored in native-options.cfg and defaults to Off.

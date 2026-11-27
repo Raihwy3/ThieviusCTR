@@ -39,32 +39,32 @@ static int CaneClassifyTri(const BLOTLINEVERTEX* t,const glm::vec3* planes,unsig
     }
     return inside?1:2;
 }
-static std::vector<BLOTLINEVERTEX> CaneClipAgainstPlanes(const std::vector<BLOTLINEVERTEX>& input,const glm::vec3* planes,unsigned planeCount) {
-    std::vector<BLOTLINEVERTEX> out;out.reserve(input.size());
-    for(size_t i=0;i+2<input.size();i+=3) {
-        int c=CaneClassifyTri(&input[i],planes,planeCount);
+static void CaneClipAgainstPlanesInto(const BLOTLINEVERTEX* data,size_t count,const glm::vec3* planes,unsigned planeCount,std::vector<BLOTLINEVERTEX>& out) {
+    out.clear();
+    if(out.capacity()<count)out.reserve(count);
+    for(size_t i=0;i+2<count;i+=3) {
+        int c=CaneClassifyTri(&data[i],planes,planeCount);
         if(c==0)continue;
-        if(c==1) {out.push_back(input[i]);out.push_back(input[i+1]);out.push_back(input[i+2]);continue;}
+        if(c==1) {out.push_back(data[i]);out.push_back(data[i+1]);out.push_back(data[i+2]);continue;}
         BLOTLINEVERTEX bufA[16],bufB[16];
-        bufA[0]=input[i];bufA[1]=input[i+1];bufA[2]=input[i+2];
+        bufA[0]=data[i];bufA[1]=data[i+1];bufA[2]=data[i+2];
         BLOTLINEVERTEX* src=bufA,*dst=bufB;unsigned n=3;
         for(unsigned p=0;p<planeCount && n;++p) {n=CaneClipPolyPlane(src,n,dst,planes[p]);std::swap(src,dst);}
         CaneFan(out,src,n);
     }
-    return out;
 }
-static std::vector<BLOTLINEVERTEX> CaneClipUi(const std::vector<BLOTLINEVERTEX>& input) {
+static void CaneClipUiInto(const BLOTLINEVERTEX* data,size_t count,std::vector<BLOTLINEVERTEX>& out) {
     const float s=g_gl.uiScale;const auto o=g_gl.uiOrigin;
     // Original triangular compass aperture: (273,9), (367,9), (320,44).
     const glm::vec3 planes[3]={glm::vec3(0,1,-o.y-9*s),
         glm::vec3(35,-47,-35*(o.x+273*s)+47*(o.y+9*s)),
         glm::vec3(-35,-47,35*(o.x+367*s)+47*(o.y+9*s))};
-    return CaneClipAgainstPlanes(input,planes,3);
+    CaneClipAgainstPlanesInto(data,count,planes,3,out);
 }
-static std::vector<BLOTLINEVERTEX> CaneClipRectUi(const std::vector<BLOTLINEVERTEX>& input) {
+static void CaneClipRectUiInto(const BLOTLINEVERTEX* data,size_t count,std::vector<BLOTLINEVERTEX>& out) {
     const glm::vec3 planes[4]={glm::vec3(1,0,-caneClipRect.x),glm::vec3(0,1,-caneClipRect.y),
         glm::vec3(-1,0,caneClipRect.z),glm::vec3(0,-1,caneClipRect.w)};
-    return CaneClipAgainstPlanes(input,planes,4);
+    CaneClipAgainstPlanesInto(data,count,planes,4,out);
 }
 struct CaneBinocOutVert {glm::vec3 pos;uint16_t i0,i1,i2;float w0,w1,w2;};
 static std::vector<BLOTLINEVERTEX> caneBinocBgCache;

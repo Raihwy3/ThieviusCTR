@@ -364,7 +364,7 @@ void RecalcCm(CM* pcm)
 	// Match RecalcCmFrustum: rAspect remains the fixed authored camera aspect.
 	pcm->yScreenRange = yScreenRange;
 	pcm->xScreenRange = yScreenRange * gameplayAspect;
-	pcm->rMRDAdjust = std::max(1.0f, pcm->rMRD * (1.0f / pcm->radFOV));
+	pcm->rMRDAdjust = std::max(0.25f, pcm->rMRD * std::max(1.0f, 1.0f / pcm->radFOV));
 	// This radius belongs to the authored camera/collision path, not the display
 	// projection. Keeping it in the original PS2 rAspect/radFOV space preserves
 	// console camera obstruction and stick-direction behavior in every host

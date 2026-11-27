@@ -41,6 +41,9 @@ cfg_lines=icon_cfg.read_text().splitlines() if icon_cfg.exists() else []
 if args.skip_intro:
     cfg_lines=[line for line in cfg_lines if line.split(' ',1)[0] not in ('intro_seen','skip_intro')]+['intro_seen 1','skip_intro 1']
     icon_cfg.write_text('\n'.join(cfg_lines)+'\n')
+elif args.menu and icon_cfg.exists():
+    cfg_lines=[line for line in cfg_lines if line.split(' ',1)[0]!='skip_intro']+['skip_intro 0']
+    icon_cfg.write_text('\n'.join(cfg_lines)+'\n')
 if args.stereo_bottom:
     if not args.runtime or args.menu:parser.error('--stereo-bottom needs --runtime without --menu')
     keys={'display_mode':'6','bottom_coins':'1','bottom_health':'1','bottom_monitor':'0'}
@@ -62,7 +65,7 @@ initial_inverts=(
 )
 if args.features:
     if not (args.runtime and args.menu and args.buttons):parser.error('--features needs --runtime --menu --buttons')
-    keys={'display_mode':'0','stereo_strength':'100','gyro_enabled':'0','gyro_sensitivity':'100','low_shadow_detail':'0','bottom_coins':'1','bottom_health':'1','bottom_bottles':'0','bottom_monitor':'0'}
+    keys={'display_mode':'0','render_cap':'30','stereo_strength':'100','gyro_enabled':'0','gyro_sensitivity':'100','low_shadow_detail':'0','bottom_coins':'1','bottom_health':'1','bottom_bottles':'0','bottom_monitor':'0','trophy_popups':'0'}
     lines=[line for line in cfg_lines if line.split(' ',1)[0] not in keys]
     icon_cfg.write_text('\n'.join(lines+[f'{key} {value}' for key,value in keys.items()])+'\n')
     qt=out/'config/azaharplus-emu/qt-config.ini'
@@ -159,7 +162,7 @@ with (out/'xvfb.log').open('w') as xlog,(out/'azahar.log').open('w') as log:
                     subprocess.run(['xdotool','keydown',key],env=env,check=True);time.sleep(seconds)
                     subprocess.run(['xdotool','keyup',key],env=env,check=True);time.sleep(1)
                 tap('n');time.sleep(1)
-                tap('g');tap('g');tap(confirm_key());time.sleep(2)
+                tap('g');tap('g');tap('g');tap(confirm_key());time.sleep(2)
                 subprocess.run(['import','-window','root',str(out/'options.png')],env=env,check=True)
                 tap('h');time.sleep(2)
                 subprocess.run(['import','-window','root',str(out/'ndsp-fallback.png')],env=env,check=True)
@@ -168,21 +171,43 @@ with (out/'xvfb.log').open('w') as xlog,(out/'azahar.log').open('w') as log:
                 tap('z');tap('z');tap('n');time.sleep(2)
                 subprocess.run(['import','-window','root',str(out/'original-options.png')],env=env,check=True)
                 if args.buttons:
-                    tap('g');tap('g');tap('g');tap(confirm_key());time.sleep(2)
+                    cfg=out/'data/azaharplus-emu/sdmc/3ds/ThieviusCTR/native-options.cfg'
+                    def saved(line):
+                        if line not in cfg.read_text().splitlines():raise RuntimeError('Setting not saved: '+line)
+                    # Options -> Interface & HUD...
+                    tap('g');tap('g');tap('g');tap('g');tap('g');tap(confirm_key());time.sleep(2)
                     if initial_icons=='PS2':tap('h')
                     subprocess.run(['import','-window','root',str(out/'buttons-new-3ds.png')],env=env,check=True)
                     tap('h')
                     subprocess.run(['import','-window','root',str(out/'buttons-ps2.png')],env=env,check=True)
-                    cfg=out/'data/azaharplus-emu/sdmc/3ds/ThieviusCTR/native-options.cfg'
                     if cfg.read_text().splitlines()[0]!='button_icons 0':raise RuntimeError('PS2 choice not saved')
                     tap('h')
                     if cfg.read_text().splitlines()[0]!='button_icons 1':raise RuntimeError('New 3DS choice not saved')
                     tap(confirm_key());tap(confirm_key())
                     if cfg.read_text().splitlines()[0]!='button_icons 1':raise RuntimeError('Confirm did not toggle icon choice')
                     if args.features:
-                        def saved(line):
-                            if line not in cfg.read_text().splitlines():raise RuntimeError('Setting not saved: '+line)
-                        tap('g');tap(confirm_key());tap('h');saved('display_mode 1');time.sleep(2)
+                        subprocess.run(['import','-window','root',str(out/'bottom-options.png')],env=env,check=True)
+                        tap('g');tap('h');saved('bottom_monitor 1');time.sleep(1)
+                        subprocess.run(['import','-window','root',str(out/'bottom-monitor.png')],env=env,check=True)
+                        tap('f');saved('bottom_monitor 0')
+                        tap('g');tap('h');saved('bottom_coins 0');tap('f');saved('bottom_coins 1')
+                        tap('g');tap('h');saved('bottom_health 1');saved('bottom_bottles 1')
+                        subprocess.run(['import','-window','root',str(out/'bottom-options-bottles.png')],env=env,check=True)
+                        tap('h');saved('bottom_health 0');tap('f');saved('bottom_health 1');saved('bottom_bottles 1')
+                        tap('f');saved('bottom_bottles 0')
+                        tap('g');tap('h');saved('dialogue_skip_controls 1');tap('h');saved('dialogue_skip_controls 0')
+                        tap('g')
+                        tap('g');tap('h');saved('trophy_popups 1');tap('f');saved('trophy_popups 0')
+                    else:
+                        tap('g');tap('g');tap('g');tap('g')
+                        tap('h');saved('dialogue_skip_controls 1')
+                        tap('h');saved('dialogue_skip_controls 0')
+                    tap('z')
+                    if args.features:
+                        # Options -> Video...
+                        tap('g');tap('g');tap(confirm_key());time.sleep(2)
+                        subprocess.run(['import','-window','root',str(out/'video-menu.png')],env=env,check=True)
+                        tap('h');saved('display_mode 1');time.sleep(2)
                         subprocess.run(['import','-window','root',str(out/'display-800.png')],env=env,check=True)
                         tap('h');saved('display_mode 2');time.sleep(2)
                         subprocess.run(['import','-window','root',str(out/'display-stereo.png')],env=env,check=True)
@@ -190,44 +215,31 @@ with (out/'xvfb.log').open('w') as xlog,(out/'azahar.log').open('w') as log:
                             tap('h');saved('display_mode '+str(mode));time.sleep(2)
                             subprocess.run(['import','-window','root',str(out/('display-'+name+'.png'))],env=env,check=True)
                         tap('f');saved('display_mode 6');tap('h');saved('display_mode 0')
-                        # Compare the fixed title/first menu row against the
-                        # known upright SSAA path, not just display-mode logs.
+                        # Compare the fixed Video title row against the upright SSAA path,
+                        # not the changing Display value row below it.
                         from PIL import Image,ImageChops,ImageStat
                         def top_image(path):return Image.open(path).convert('L').crop((300,225,700,465))
-                        reference=top_image(out/'display-ssaa.png').crop((110,52,290,89)).point(lambda x:255 if x>135 else 0)
+                        reference=top_image(out/'display-ssaa.png').crop((110,48,290,67)).point(lambda x:255 if x>135 else 0)
                         transforms=(None,Image.Transpose.ROTATE_180,Image.Transpose.FLIP_TOP_BOTTOM,Image.Transpose.FLIP_LEFT_RIGHT)
                         for name in ('native','stereo','stereo-480'):
                             candidate=top_image(out/('display-'+name+'.png'))
                             scores=[]
                             for transform in transforms:
                                 aligned=candidate if transform is None else candidate.transpose(transform)
-                                sample=aligned.crop((110,52,290,89)).point(lambda x:255 if x>135 else 0)
+                                sample=aligned.crop((110,48,290,67)).point(lambda x:255 if x>135 else 0)
                                 scores.append(ImageStat.Stat(ImageChops.difference(reference,sample)).mean[0])
                             if scores.index(min(scores))!=0:raise RuntimeError('Image orientation mismatch: '+name+' '+str(scores))
                         print('PASS captured native/stereo image orientation against upright SSAA',flush=True)
-                        tap('z');tap('g');tap('g');tap(confirm_key());time.sleep(1)
+                        tap('g');tap('h');saved('render_cap 60');tap('f');saved('render_cap 30')
+                        tap('g');tap('h');tap('f')
+                        tap('g');tap('h');saved('low_shadow_detail 1');tap('f');saved('low_shadow_detail 0')
+                        tap('g');tap(confirm_key());time.sleep(1)
                         subprocess.run(['import','-window','root',str(out/'stereo-settings.png')],env=env,check=True)
                         tap('g');tap('h');saved('stereo_strength 125');tap('f');saved('stereo_strength 100')
-                        tap('z')
-                        tap('g');tap('g');tap('g');tap('h');saved('low_shadow_detail 1');tap('f');saved('low_shadow_detail 0')
-                        tap('g');tap(confirm_key());time.sleep(1)
-                        subprocess.run(['import','-window','root',str(out/'bottom-options.png')],env=env,check=True)
-                        tap('h');saved('bottom_coins 0');tap('f');saved('bottom_coins 1')
-                        tap('g');tap('h');saved('bottom_health 1');saved('bottom_bottles 1')
-                        subprocess.run(['import','-window','root',str(out/'bottom-options-bottles.png')],env=env,check=True)
-                        tap('h');saved('bottom_health 0');tap('f');saved('bottom_health 1');saved('bottom_bottles 1')
-                        tap('f');saved('bottom_bottles 0')
-                        tap('g');tap('h');saved('bottom_monitor 1');time.sleep(1)
-                        subprocess.run(['import','-window','root',str(out/'bottom-monitor.png')],env=env,check=True)
-                        tap('f');saved('bottom_monitor 0');tap('z')
-                    tap('z')
+                        tap('z');tap('z')
+                    # Options -> Controls...
                     tap('g');tap('g');tap('g');tap('g');tap(confirm_key());time.sleep(2)
                     subprocess.run(['import','-window','root',str(out/'controls-submenu.png')],env=env,check=True)
-                    tap('h')
-                    if 'dialogue_skip_controls 1' not in cfg.read_text():raise RuntimeError('Dialogue option not saved')
-                    tap('h')
-                    if 'dialogue_skip_controls 0' not in cfg.read_text():raise RuntimeError('Dialogue option not restored')
-                    tap('g')
                     if not swap_on:
                         tap('h')
                         swap_on=True
@@ -268,7 +280,7 @@ with (out/'xvfb.log').open('w') as xlog,(out/'azahar.log').open('w') as log:
                 menu_log=out/'data/azaharplus-emu/sdmc/3ds/ThieviusCTR/runtime.log'
                 pre_notes=[int(x) for x in _re.findall(r'music notes=(\d+)',menu_log.read_text())] if menu_log.exists() else [0]
                 menu_switch_notes=max(pre_notes,default=0)
-                tap('m');tap('g');tap(confirm_key());tap('g');tap('g');tap(confirm_key());tap('h');tap('h');tap('z');tap('z');tap('z');time.sleep(5)
+                tap('m');tap('g');tap(confirm_key());tap('g');tap('g');tap('g');tap(confirm_key());tap('h');tap('h');tap('z');tap('z');tap('z');time.sleep(5)
                 subprocess.run(['import','-window','root',str(out/'audio-restored.png')],env=env,check=True)
                 if args.buttons:
                     tap('m');time.sleep(2)
@@ -332,7 +344,7 @@ with (out/'xvfb.log').open('w') as xlog,(out/'azahar.log').open('w') as log:
                 if args.features:
                     for marker in ('requested=1 actual=0','requested=2 actual=2','requested=6 actual=6 (400x480, eyes=2','Stereo eyes: 2 slider=1.00','Texture memory:','Bottom HUD target: ready'):
                         if marker not in audio:raise RuntimeError('Missing display/memory check: '+marker)
-                    for line in ('display_mode 0','stereo_strength 100','gyro_enabled 0','gyro_sensitivity 100','low_shadow_detail 0'):
+                    for line in ('display_mode 0','render_cap 30','stereo_strength 100','gyro_enabled 0','gyro_sensitivity 100','low_shadow_detail 0','trophy_popups 0'):
                         if line not in cfg.read_text().splitlines():raise RuntimeError('Feature default not restored: '+line)
                     print('PASS display switches, two eye passes, shadow and gyro settings, nonblocking calibration',flush=True)
                 audio_markers=[] if args.skip_intro else ['Movie 17 ended valid=1']

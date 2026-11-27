@@ -9,7 +9,7 @@
 
 ## Status & Features
 
-- **Local trophies**: 36 awards based on the PS3 trophy set, with an in-game Trophies menu, saved progress, and optional bottom-right top-screen notifications (`Options > Debug > Trophy popups`, off by default).
+- **Local trophies**: 36 awards based on the PS3 trophy set, with an in-game Trophies menu, saved progress, and optional bottom-right top-screen notifications (`Options > Interface & HUD > Trophy popups`, off by default).
 
 - **Playability**: Real-hardware tested on **New 3DS** through Paris, The Hideout, and the first level of Episode 1 (*Tide of Terror*). Later episodes, gameplay polish, and some UI panels/effects are still work in progress.
 - **Hardware Recommendation**: Developed and tested primarily on **New 3DS / New 2DS XL**. Old 3DS compatibility and performance have not yet been verified.
@@ -176,11 +176,13 @@ This produces `Cutscene_00.cmov`..`Cutscene_17.cmov` + `.wav` (`640×224` for wi
 All 3DS-specific preferences integrate into the game's built-in **Options** menu:
 
 - **Options > Sound**: Switch between **OpenDSP** (default, no dump needed) and **NDSP**, and adjust volumes / stereo output (saved in `audio-backend.cfg`).
-- **Options > Graphics**: Choose **New 3DS** (default) or **PS2** button icons. Display modes include **400×240**, **800×240 2D**, per-eye stereoscopic 3D and **800×480 internal supersampling**. These modes are mutually exclusive. Adjust 3D strength, Original/Low shadow maps, and a **30/60 FPS render cap**. The game simulation remains 30 Hz; the 60 FPS option lets the renderer submit frames at 60 FPS using the latest simulation state. PICA-SR filter implementations are retained but hidden from the selector for now.
+- **Options > Video**: Switch display modes (**400×240**, **800×240 2D**, per-eye stereoscopic 3D, **400×480/eye** 3D, and **800×480 internal supersampling**), **30/60 FPS render cap**, **Draw Distance**, Original/Low **Shadows**, and **3D settings...**. These display modes are mutually exclusive. The game simulation remains 30 Hz; the 60 FPS option lets the renderer submit frames at 60 FPS using the latest simulation state. PICA-SR filter implementations are retained but hidden from the selector for now.
   - The top screen shares its extra horizontal pixels between wide 2D and stereo: 800×240 **per eye** is not supported. The physical 3D slider controls depth in stereo mode; 2DS models cannot show stereo. Wide output falls back to 400×240 in the emulator, whose 800-column output is cropped. SSAA and PICA-SR modes need additional render-target memory; if allocation fails, the renderer falls back to native 400×240.
-  - **3D (400×480/eye)** renders twice the vertical resolution and downsamples to the panel. It uses more GPU time and VRAM than normal 3D. Both stereo modes use the same 3D settings submenu.
+  - **3D (400×480/eye)** renders twice the vertical resolution and downsamples to the panel. It uses more GPU time and VRAM than normal 3D. Both stereo modes use the same **3D settings...** submenu.
   - Cutscenes keep their existing playback path. These display settings apply to the rendered game and menus.
-- **Options > Controls**: Configure **Swap B/A** (default **On**; swaps physical `B`/`A` and displayed icons), **Dialogue Skip Controls**, **Camera Invert X/Y** (X defaults **On**), and **Binoc Invert X/Y** (Y defaults **On**) (saved in `native-options.cfg`).
+- **Options > Controls**: Configure **Swap B/A** (default **On**; swaps physical `B`/`A` and displayed icons), **Camera Invert X/Y** (X defaults **On**), **Binoc Invert X/Y** (Y defaults **On**), and **Gyro aiming...** (saved in `native-options.cfg`).
+- **Options > Interface & HUD**: Configure **Button icons** (**New 3DS** default or **PS2**), **Bottom screen** (Game HUD or FPS / CPU / GPU / RAM System monitor), **Bottom coins**, **Bottom counter** (Lives / Bottles / Off), **Dialogue skip**, **Skip intro**, and **Trophy popups** (off by default).
+- **Options > Debug**: **Reset trophies...** to clear the local trophy record after confirmation.
 
 The new display modes and gyro controls have passed emulator/host checks; console testing of depth and physical motion is still needed.
 
@@ -188,7 +190,7 @@ The new display modes and gyro controls have passed emulator/host checks; consol
 
 Existing ETC1 world-texture caches under `Cache/Textures/` can still be loaded. Missing caches immediately use the original texture format; synchronous startup encoding is disabled to avoid stalls before cutscenes on fresh ISO installations. Transparent textures, font atlases and UI retain their existing formats. Cache files derive from your own game data and are not included in release ZIPs. World textures have a 3 MiB VRAM budget, with overflow in linear RAM, reserving space for display targets and shadows.
 
-The bottom screen shows the original coin counter at the upper left and health/lives indicator at the upper right. Enabled counters stay visible during gameplay alongside the original top-screen pop-ups. Portrait conversations fill the bottom screen, with text above the animated character windows. Drag to control the gameplay camera or tap to advance dialogue. The title has Play/Options buttons; pause menus stay on the top screen. **Graphics > Bottom screen** provides separate counter toggles and a choice of game HUD or the **FPS / CPU / GPU / RAM** system monitor. Portrait conversations temporarily replace the monitor.
+The bottom screen shows the original coin counter at the upper left and health/lives indicator at the upper right. Enabled counters stay visible during gameplay alongside the original top-screen pop-ups. Portrait conversations fill the bottom screen, with text above the animated character windows. Drag to control the gameplay camera or tap to advance dialogue. The title has Play/Options/Trophies buttons; pause menus stay on the top screen. **Options > Interface & HUD** provides separate bottom-screen counter toggles and a choice of game HUD or the **FPS / CPU / GPU / RAM** system monitor. Portrait conversations temporarily replace the monitor.
 
 ---
 

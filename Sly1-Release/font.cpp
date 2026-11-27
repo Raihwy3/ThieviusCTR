@@ -118,37 +118,52 @@ namespace
     }
 #endif
 
-	void AppendGlyph(GlyphVertices& vertices, CFontBrx* font, uint32_t codepoint,
+	float AppendGlyphAndAdvance(GlyphVertices& vertices, CFontBrx* font, uint32_t codepoint,
 		float x, float y, const glm::vec4& color)
 	{
 		GLYFF* glyph = font->PglyffFromCodepoint(codepoint);
-		if (glyph == nullptr || font->m_pbmp == nullptr)
-			return;
+		if (glyph == nullptr)
+			return static_cast<float>(font->m_dxSpaceUnscaled) * font->m_rxScale;
 
-		// Retail draws the glyph's authored pixel width, then advances by one
-		// additional scaled pixel. Keeping that extra pixel out of the quad is
-		// what produces the PS2 font's visible inter-character spacing.
-		const float width = static_cast<float>(glyph->dx) * font->m_rxScale;
-		const float height = static_cast<float>(font->m_dyUnscaled) * font->m_ryScale;
-        float left=x,top=y,right=x+width,bottom=y+height;
+		if (font->m_pbmp != nullptr)
+		{
+			// Retail draws the glyph's authored pixel width, then advances by one
+			// additional scaled pixel. Keeping that extra pixel out of the quad is
+			// what produces the PS2 font's visible inter-character spacing.
+			const float width = static_cast<float>(glyph->dx) * font->m_rxScale;
+			const float height = static_cast<float>(font->m_dyUnscaled) * font->m_ryScale;
+			float left=x,top=y,right=x+width,bottom=y+height;
 #ifdef __3DS__
-        // Font clones share the original atlas. Align their small native
-        // glyphs to pixels without changing font size, advances or wrapping.
-        const CFontBrx* nativeText=PfontFromFont(0);
-        if(nativeText && font->m_pbmp==nativeText->m_pbmp && width>=1 && height>=1) {
-            left=std::round(left);top=std::round(top);
-            // Keep the authored proportions: independently rounding both
-            // edges can squeeze a narrow counter shut on small letters.
-            right=left+width;
-            bottom=top+height;
-        }
+			// Font clones share the original atlas. Align their small native
+			// glyphs to pixels without changing font size, advances or wrapping.
+			const CFontBrx* nativeText=PfontFromFont(0);
+			if(nativeText && font->m_pbmp==nativeText->m_pbmp && width>=1 && height>=1) {
+				left=std::round(left);top=std::round(top);
+				// Keep the authored proportions: independently rounding both
+				// edges can squeeze a narrow counter shut on small letters.
+				right=left+width;
+				bottom=top+height;
+			}
 #endif
-		const float u0 = glyph->x / static_cast<float>(font->m_pbmp->bmpWidth);
-		const float v0 = glyph->y / static_cast<float>(font->m_pbmp->bmpHeight);
-		const float u1 = (glyph->x + glyph->dx) / static_cast<float>(font->m_pbmp->bmpWidth);
-		const float v1 = (glyph->y + font->m_dyUnscaled) / static_cast<float>(font->m_pbmp->bmpHeight);
+			const float invW = 1.0f / static_cast<float>(font->m_pbmp->bmpWidth);
+			const float invH = 1.0f / static_cast<float>(font->m_pbmp->bmpHeight);
+			const float u0 = glyph->x * invW;
+			const float v0 = glyph->y * invH;
+			const float u1 = (glyph->x + glyph->dx) * invW;
+			const float v1 = (glyph->y + font->m_dyUnscaled) * invH;
 
-		AppendQuad(vertices, left, top, right, bottom, u0, v0, u1, v1, color);
+			AppendQuad(vertices, left, top, right, bottom, u0, v0, u1, v1, color);
+		}
+#ifdef __3DS__
+		if(NativeTextFont(font))return NativeTextAdvance(font,glyph);
+#endif
+		return static_cast<float>(glyph->dx + 1) * font->m_rxScale;
+	}
+
+	void AppendGlyph(GlyphVertices& vertices, CFontBrx* font, uint32_t codepoint,
+		float x, float y, const glm::vec4& color)
+	{
+		(void)AppendGlyphAndAdvance(vertices, font, codepoint, x, y, color);
 	}
 
 	void FlushGlyphs(GlyphVertices& vertices, GLuint texture, bool nearest)
@@ -223,11 +238,11 @@ namespace
 
 	uint32_t RemapControllerCodepoint3ds(const CFontBrx* font, uint32_t codepoint)
 	{
+		if (codepoint != 'X' && codepoint != 'O')
+			return codepoint;
 		if (!CaneSwapBA3ds() || !FControllerIconFont3ds(font))
 			return codepoint;
-		if (codepoint == 'X') return 'O';
-		if (codepoint == 'O') return 'X';
-		return codepoint;
+		return (codepoint == 'X') ? 'O' : 'X';
 	}
 #endif
 }
@@ -677,38 +692,40 @@ void CRichText::Draw(CTextBox* ptbx, CTextBox* ptbxClip,
 
 	float lineWidths[64]{};
 	int lineCount = 0;
-
-	Reset();
-
-	while (true)
-	{
-		const uint32_t ch = ChNext();
-
-		if (ch == '\0')
-			break;
-
-		if (ch == '\n')
-		{
-			if (lineCount < 63)
-				++lineCount;
-
-			continue;
-		}
-
-		if (m_pfontCur != nullptr)
-			lineWidths[lineCount] += m_pfontCur->DxFromCodepoint(ch) * outputScaleX;
-	}
-
 	const float lineHeight = static_cast<float>(m_pfontBase->m_dyUnscaled) *
 		m_pfontBase->m_ryScale * outputScaleY;
-	const float totalHeight = static_cast<float>(lineCount + 1) * lineHeight;
-
 	float yCursor = ptbx->m_y;
 
-	if (ptbx->m_jv == JV_Bottom)
-		yCursor = ptbx->m_y + ptbx->m_dy - totalHeight;
-	else if (ptbx->m_jv != JV_Top)
-		yCursor = ptbx->m_y + (ptbx->m_dy - totalHeight) * 0.5f;
+	if (ptbx->m_jh != JH_Left || ptbx->m_jv != JV_Top)
+	{
+		Reset();
+
+		while (true)
+		{
+			const uint32_t ch = ChNext();
+
+			if (ch == '\0')
+				break;
+
+			if (ch == '\n')
+			{
+				if (lineCount < 63)
+					++lineCount;
+
+				continue;
+			}
+
+			if (m_pfontCur != nullptr)
+				lineWidths[lineCount] += m_pfontCur->DxFromCodepoint(ch) * outputScaleX;
+		}
+
+		const float totalHeight = static_cast<float>(lineCount + 1) * lineHeight;
+
+		if (ptbx->m_jv == JV_Bottom)
+			yCursor = ptbx->m_y + ptbx->m_dy - totalHeight;
+		else if (ptbx->m_jv != JV_Top)
+			yCursor = ptbx->m_y + (ptbx->m_dy - totalHeight) * 0.5f;
+	}
 
 	SetBaseColor(&ptbx->m_rgba);
 	Reset();
@@ -774,7 +791,12 @@ void CRichText::Draw(CTextBox* ptbx, CTextBox* ptbxClip,
 	GLuint batchTexture = 0;
 	bool batchNearest = false;
 	bool batchActive = false;
+#ifdef __3DS__
+	static GlyphVertices glyphs;
+	glyphs.clear();
+#else
 	GlyphVertices glyphs;
+#endif
 	glyphs.reserve(m_text.size() * 6);
 	BeginGlyphDraw();
 
@@ -828,8 +850,7 @@ void CRichText::Draw(CTextBox* ptbx, CTextBox* ptbxClip,
 		const float ryScale = currentFont->m_ryScale;
 		currentFont->m_rxScale *= outputScaleX;
 		currentFont->m_ryScale *= outputScaleY;
-		AppendGlyph(glyphs, currentFont, ch, xCursor, yCursor, m_rgbaCur);
-		xCursor += currentFont->DxFromCodepoint(ch);
+		xCursor += AppendGlyphAndAdvance(glyphs, currentFont, ch, xCursor, yCursor, m_rgbaCur);
 		currentFont->m_rxScale = rxScale;
 		currentFont->m_ryScale = ryScale;
 	}
@@ -888,6 +909,32 @@ void CFontBrx::LoadFromBrx(CBinaryInputStream* pbis)
 
 		m_aglyff[static_cast<uint16_t>(glyph.wch)] = glyph;
 	}
+
+	m_pglyphTable.reset();
+	m_glyphTableSourceSize = 0;
+	EnsureGlyphTable();
+}
+
+void CFontBrx::EnsureGlyphTable()
+{
+	if (m_pglyphTable && (m_aglyff.empty() || m_aglyff.size() == m_glyphTableSourceSize))
+		return;
+
+	auto table = std::make_shared<GlyphTable>();
+	for (const auto& kv : m_aglyff)
+	{
+		if (kv.first < 256)
+		{
+			table->ascii[kv.first] = kv.second;
+			table->asciiPresent[kv.first] = 1;
+		}
+		else
+		{
+			table->extra.emplace(kv.first, kv.second);
+		}
+	}
+	m_pglyphTable = std::move(table);
+	m_glyphTableSourceSize = m_aglyff.size();
 }
 
 void CFontBrx::PostLoad()
@@ -903,12 +950,17 @@ GLYFF* CFontBrx::PglyffFromCh(char ch)
 #ifdef __3DS__
 	key = RemapControllerCodepoint3ds(this, key);
 #endif
-	auto it = m_aglyff.find(static_cast<uint16_t>(key));
+	if (!m_pglyphTable || (!m_aglyff.empty() && m_aglyff.size() != m_glyphTableSourceSize))
+		EnsureGlyphTable();
 
-	if (it != m_aglyff.end())
-		return &it->second;
+	if (key < 256)
+		return m_pglyphTable->asciiPresent[key] ? &m_pglyphTable->ascii[key] : nullptr;
 
-	return nullptr;
+	if (m_pglyphTable->extra.empty())
+		return nullptr;
+
+	auto it = m_pglyphTable->extra.find(static_cast<uint16_t>(key));
+	return it != m_pglyphTable->extra.end() ? &it->second : nullptr;
 }
 
 GLYFF* CFontBrx::PglyffFromCodepoint(uint32_t codepoint)
@@ -918,8 +970,17 @@ GLYFF* CFontBrx::PglyffFromCodepoint(uint32_t codepoint)
 #ifdef __3DS__
 	codepoint = RemapControllerCodepoint3ds(this, codepoint);
 #endif
-	auto it = m_aglyff.find(static_cast<uint16_t>(codepoint));
-	return it != m_aglyff.end() ? &it->second : nullptr;
+	if (!m_pglyphTable || (!m_aglyff.empty() && m_aglyff.size() != m_glyphTableSourceSize))
+		EnsureGlyphTable();
+
+	if (codepoint < 256)
+		return m_pglyphTable->asciiPresent[codepoint] ? &m_pglyphTable->ascii[codepoint] : nullptr;
+
+	if (m_pglyphTable->extra.empty())
+		return nullptr;
+
+	auto it = m_pglyphTable->extra.find(static_cast<uint16_t>(codepoint));
+	return it != m_pglyphTable->extra.end() ? &it->second : nullptr;
 }
 
 float CFontBrx::DxFromPchz(char* pchz)
@@ -980,9 +1041,12 @@ std::shared_ptr<CFontBrx> CFontBrx::PfontClone(float rx, float ry)
 	fontclone->m_gstest = this->m_gstest;
 	fontclone->m_z = this->m_z;
 
+	EnsureGlyphTable();
 	fontclone->m_pbmp = this->m_pbmp;
 	fontclone->m_cglyff = this->m_cglyff;
 	fontclone->m_aglyff = this->m_aglyff;
+	fontclone->m_pglyphTable = this->m_pglyphTable;
+	fontclone->m_glyphTableSourceSize = this->m_aglyff.size();
 	fontclone->m_grffont = this->m_grffont;
 
 	return fontclone;
@@ -1033,8 +1097,8 @@ float CFontBrx::DxDrawCh(char ch, float xChar, float yChar, glm::vec4& rgba)
 
 #ifdef __3DS__
 	{
-		GlyphVertices verts;
-		verts.reserve(6);
+		static GlyphVertices verts;
+		verts.clear();
 		AppendQuad(verts, xChar, yChar, xChar + glyphW, yChar + glyphH, s0, t1, s1, t0, rgba);
 		FlushGlyphs(verts, m_pbmp != nullptr ? m_pbmp->glDiffuseMap : 0, FGuiSpriteFont(this));
 		return glyphAdvance;
@@ -1085,8 +1149,8 @@ float CFontBrx::DxDrawChRotated90(char ch, float xChar, float yChar, glm::vec4& 
 		glm::vec3 pos[4];
 		for (int i = 0; i < 4; ++i)
 			pos[i] = glm::vec3(model * glm::vec4(corners[i].x, corners[i].y, 0.0f, 1.0f));
-		GlyphVertices verts;
-		verts.reserve(6);
+		static GlyphVertices verts;
+		verts.clear();
 		for (int idx : { 0, 1, 2, 0, 2, 3 })
 			verts.push_back({ pos[idx], uvs[idx], rgba });
 		FlushGlyphs(verts, m_pbmp != nullptr ? m_pbmp->glDiffuseMap : 0, FGuiSpriteFont(this));
@@ -1167,7 +1231,12 @@ void CFontBrx::EdgeRect(CTextEdge* pte, CTextBox* ptbx)
 
 	glm::vec4 color = pte->m_rgba;
 
+#ifdef __3DS__
+	static GlyphVertices vertices;
+	vertices.clear();
+#else
 	GlyphVertices vertices;
+#endif
 	vertices.reserve(9 * 6);
 	AppendQuad(vertices, outerX0, outerY0, x0, y0, s0, t0, sMid, tMid, color);
 	AppendQuad(vertices, x0, outerY0, x1, y0, sMid, t0, sMid, tMid, color);
@@ -1220,9 +1289,12 @@ void CFontBrx::CopyTo(CFontBrx* pfontDst)
 	pfontDst->m_gstest = this->m_gstest;
 	pfontDst->m_z = this->m_z;
 
+	EnsureGlyphTable();
 	pfontDst->m_pbmp = this->m_pbmp;
 	pfontDst->m_cglyff = this->m_cglyff;
-	pfontDst->m_aglyff = this->m_aglyff;
+	pfontDst->m_aglyff.clear();
+	pfontDst->m_pglyphTable = this->m_pglyphTable;
+	pfontDst->m_glyphTableSourceSize = 0;
 	pfontDst->m_grffont = this->m_grffont;
 }
 
@@ -1356,8 +1428,8 @@ void CFontBrx::DrawPart(float x0, float y0, float x1, float y1, float s0, float 
 {
 #ifdef __3DS__
 	{
-		GlyphVertices verts;
-		verts.reserve(6);
+		static GlyphVertices verts;
+		verts.clear();
 		AppendQuad(verts, x0, y0, x1, y1, s0, t0, s1, t1, color);
 		FlushGlyphs(verts, m_pbmp != nullptr ? m_pbmp->glDiffuseMap : 0, FGuiSpriteFont(this));
 		return;
@@ -1379,8 +1451,13 @@ void CFontBrx::DrawPchz(char* pchz, CTextBox* ptbx)
 	if (!pchz || !ptbx) return;
 
 	BeginGlyphDraw();
+#ifdef __3DS__
+	static GlyphVertices glyphs;
+	glyphs.clear();
+#else
 	GlyphVertices glyphs;
 	glyphs.reserve(std::strlen(pchz) * 6);
+#endif
 
 	float y = ptbx->m_y;
 
@@ -1433,9 +1510,7 @@ void CFontBrx::DrawPchz(char* pchz, CTextBox* ptbx)
 
 		const char* next = pchz;
 		const uint32_t codepoint = DecodeUtf8(next);
-		AppendGlyph(glyphs, this, codepoint, x, y, ptbx->m_rgba);
-		float charWidth = DxFromCodepoint(codepoint);
-		x += charWidth;
+		x += AppendGlyphAndAdvance(glyphs, this, codepoint, x, y, ptbx->m_rgba);
 		pchz = const_cast<char*>(next);
 	}
 
@@ -1450,7 +1525,12 @@ void CFontBrx::DrawGlyphRun(const char* text, const float* xPositions,
 	if (text == nullptr || xPositions == nullptr || count == 0 || m_pbmp == nullptr)
 		return;
 
+#ifdef __3DS__
+	static GlyphVertices glyphs;
+	glyphs.clear();
+#else
 	GlyphVertices glyphs;
+#endif
 	glyphs.reserve(count * 6);
 	for (std::size_t i = 0; i < count; ++i)
 		AppendGlyph(glyphs, this, text[i], xPositions[i], y, color);
@@ -1501,8 +1581,8 @@ void RenderGlyphQuad(float x, float y, float w, float h, float u0, float v0, flo
 {
 #ifdef __3DS__
 	{
-		GlyphVertices verts;
-		verts.reserve(6);
+		static GlyphVertices verts;
+		verts.clear();
 		AppendQuad(verts, x, y, x + w, y + h, u0, v1, u1, v0, color);
 		FlushGlyphs(verts, g_pfont != nullptr && g_pfont->m_pbmp != nullptr ? g_pfont->m_pbmp->glDiffuseMap : 0, true);
 		return;

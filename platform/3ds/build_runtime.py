@@ -72,9 +72,13 @@ if compiled.returncode:
 # Build the shader independently, including on a clean checkout.
 subprocess.run([str(DK/'tools/bin/picasso'),'-o',str(OUT/'basic.shbin'),str(ROOT/'platform/3ds/runtime.v.pica')],check=True)
 subprocess.run([str(DK/'tools/bin/picasso'),'-o',str(OUT/'movie.shbin'),str(ROOT/'platform/3ds/runtime_movie.v.pica')],check=True)
+subprocess.run([str(DK/'tools/bin/picasso'),'-o',str(OUT/'stereo1.shbin'),str(ROOT/'platform/3ds/runtime_stereo1.v.pica')],check=True)
+subprocess.run([str(DK/'tools/bin/picasso'),'-o',str(OUT/'flat1.shbin'),str(ROOT/'platform/3ds/runtime_flat1.v.pica')],check=True)
 (OUT/'runtime-shader.s').write_text('.section .rodata.cane_shader,"a",%progbits\n.balign 4\n.global cane_shader\n.global cane_shader_end\ncane_shader:\n.incbin "basic.shbin"\ncane_shader_end:\n')
 with (OUT/'runtime-shader.s').open('a') as asm:
  asm.write('.balign 4\n.global cane_movie_shader\n.global cane_movie_shader_end\ncane_movie_shader:\n.incbin "movie.shbin"\ncane_movie_shader_end:\n')
+ asm.write('.balign 4\n.global cane_stereo1_shader\n.global cane_stereo1_shader_end\ncane_stereo1_shader:\n.incbin "stereo1.shbin"\ncane_stereo1_shader_end:\n')
+ asm.write('.balign 4\n.global cane_flat1_shader\n.global cane_flat1_shader_end\ncane_flat1_shader:\n.incbin "flat1.shbin"\ncane_flat1_shader_end:\n')
 subprocess.run([str(CC),'-march=armv6k','-mtune=mpcore','-mfloat-abi=hard','-mtp=soft','-c','runtime-shader.s','-o','runtime-shader.o'],cwd=OUT,check=True)
 fsr_src=ROOT/'platform/3ds/vendor/PICASR/fsr3ds.c'
 fsr_hdr=ROOT/'platform/3ds/vendor/PICASR/fsr3ds.inc'
@@ -92,7 +96,8 @@ result=subprocess.run(command,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,te
 (CORE/'runtime-link.log').write_text(result.stdout)
 if result.returncode:
  print(result.stdout[-12000:]);raise SystemExit(result.returncode)
+smdh=OUT/'ThieviusCTR.smdh'
+subprocess.run([str(DK/'tools/bin/smdhtool'),'--create','ThieviusCTR','Sly Cooper 3DS launcher & port','Raihwy3 / ProjectCane',str(ROOT/'platform/3ds/icon.png'),str(smdh)],check=True)
 if not cia:
- subprocess.run([str(DK/'tools/bin/3dsxtool'),str(elf),str(OUT/'ThieviusCTR.3dsx')],check=True)
-subprocess.run([str(DK/'tools/bin/smdhtool'),'--create','ThieviusCTR','Sly Cooper 3DS launcher & port','Raihwy3 / ProjectCane',str(ROOT/'platform/3ds/icon.png'),str(OUT/'ThieviusCTR.smdh')],check=True)
+ subprocess.run([str(DK/'tools/bin/3dsxtool'),str(elf),str(OUT/'ThieviusCTR.3dsx'),'--smdh='+str(smdh)],check=True)
 print('Built CIA ELF:' if cia else 'Built native runtime & launcher:',elf if cia else OUT/'ThieviusCTR.3dsx')

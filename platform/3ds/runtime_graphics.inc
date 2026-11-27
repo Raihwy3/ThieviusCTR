@@ -17,6 +17,8 @@ extern "C" {
 #include <dirent.h>
 extern "C" {extern const unsigned char cane_shader[],cane_shader_end[];}
 extern "C" {extern const unsigned char cane_movie_shader[],cane_movie_shader_end[];}
+extern "C" {extern const unsigned char cane_stereo1_shader[],cane_stereo1_shader_end[];}
+extern "C" {extern const unsigned char cane_flat1_shader[],cane_flat1_shader_end[];}
 #include "font.h"
 #include "assets/buttons-new-3ds.inc"
 #include "coin.h"
@@ -60,41 +62,76 @@ struct CaneHudBatch {
     float scale=1,dx=0,dy=0;
 };
 static std::vector<CaneHudBatch> caneHud;
+static std::vector<std::vector<BLOTLINEVERTEX>> caneHudVertPool;
+static std::vector<BLOTLINEVERTEX> caneClipScratchA,caneClipScratchB;
 static bool caneCompassClip=false,caneRectClip=false;
 static glm::vec4 caneClipRect(0);
-static std::vector<BLOTLINEVERTEX> CaneClipUi(const std::vector<BLOTLINEVERTEX>&);
-static std::vector<BLOTLINEVERTEX> CaneClipRectUi(const std::vector<BLOTLINEVERTEX>&);
-void CaneGlyphsNativeAdditive(const std::vector<BLOTLINEVERTEX>& vertices,GLuint texture,bool additive) {
-    if(vertices.size()>30000 || caneHud.size()>1000)throw std::runtime_error("Native HUD budget exceeded");
-    static unsigned inspected=0;
-    if(!vertices.empty() && inspected++<6) {
-        const auto& v=vertices[0];
-        std::fprintf(stderr,"HUD glyph tex=%u pos=%.1f,%.1f rgba=%.2f,%.2f,%.2f,%.2f\n",unsigned(texture),v.position.x,v.position.y,v.color.r,v.color.g,v.color.b,v.color.a);
-    }
-    auto clipped=caneCompassClip?CaneClipUi(vertices):vertices;
-    if(caneRectClip)clipped=CaneClipRectUi(clipped);
-    if(!clipped.empty()) {
-        if(!caneHud.empty() && !caneHud.back().tv && caneHud.back().texture==texture &&
-           caneHud.back().additive==additive && caneHud.back().layer==caneHudLayer &&
-           caneHud.back().portrait==canePortraitContext &&
-           caneHud.back().vertices.size()+clipped.size()<=30000) {
-            caneHud.back().vertices.insert(caneHud.back().vertices.end(),clipped.begin(),clipped.end());
-        } else {
-            caneHud.push_back({std::move(clipped),texture,nullptr,additive,caneHudLayer,canePortraitContext});
+static void CaneClipUiInto(const BLOTLINEVERTEX*,size_t,std::vector<BLOTLINEVERTEX>&);
+static void CaneClipRectUiInto(const BLOTLINEVERTEX*,size_t,std::vector<BLOTLINEVERTEX>&);
+static void CaneRecycleHudBuffers() {
+    for(auto& batch:caneHud) {
+        if(!batch.vertices.empty() && caneHudVertPool.size()<64) {
+            batch.vertices.clear();
+            caneHudVertPool.push_back(std::move(batch.vertices));
         }
     }
+    caneHud.clear();
+}
+static void CaneClearHudPool() {
+    caneHud.clear();
+    caneHudVertPool.clear();
+    caneClipScratchA.clear();
+    caneClipScratchB.clear();
+}
+static void CaneAppendHudVertices(const BLOTLINEVERTEX* data,size_t count,GLuint texture,bool additive) {
+    if(count>30000 || caneHud.size()>1000)throw std::runtime_error("Native HUD budget exceeded");
+    if(!count)return;
+    static unsigned inspected=0;
+    if(inspected++<6) {
+        const auto& v=data[0];
+        std::fprintf(stderr,"HUD glyph tex=%u pos=%.1f,%.1f rgba=%.2f,%.2f,%.2f,%.2f\n",unsigned(texture),v.position.x,v.position.y,v.color.r,v.color.g,v.color.b,v.color.a);
+    }
+    const BLOTLINEVERTEX* srcData=data;
+    size_t srcCount=count;
+    if(caneCompassClip) {
+        CaneClipUiInto(srcData,srcCount,caneClipScratchA);
+        srcData=caneClipScratchA.data();srcCount=caneClipScratchA.size();
+    }
+    if(caneRectClip && srcCount) {
+        CaneClipRectUiInto(srcData,srcCount,caneClipScratchB);
+        srcData=caneClipScratchB.data();srcCount=caneClipScratchB.size();
+    }
+    if(!srcCount)return;
+    if(!caneHud.empty() && !caneHud.back().tv && caneHud.back().texture==texture &&
+       caneHud.back().additive==additive && caneHud.back().layer==caneHudLayer &&
+       caneHud.back().portrait==canePortraitContext &&
+       caneHud.back().vertices.size()+srcCount<=30000) {
+        caneHud.back().vertices.insert(caneHud.back().vertices.end(),srcData,srcData+srcCount);
+    } else {
+        std::vector<BLOTLINEVERTEX> buf;
+        if(!caneHudVertPool.empty()) {
+            buf=std::move(caneHudVertPool.back());
+            caneHudVertPool.pop_back();
+            buf.clear();
+        }
+        buf.insert(buf.end(),srcData,srcData+srcCount);
+        caneHud.push_back({std::move(buf),texture,nullptr,additive,caneHudLayer,canePortraitContext});
+    }
+}
+void CaneGlyphsNativeAdditive(const std::vector<BLOTLINEVERTEX>& vertices,GLuint texture,bool additive) {
+    CaneAppendHudVertices(vertices.data(),vertices.size(),texture,additive);
 }
 void CaneGlyphsNative(const std::vector<BLOTLINEVERTEX>& vertices,GLuint texture) {
-    CaneGlyphsNativeAdditive(vertices,texture,false);
+    CaneAppendHudVertices(vertices.data(),vertices.size(),texture,false);
 }
 void CaneQuadNative(float x,float y,float w,float h,GLuint texture,const glm::vec4& color) {
-    std::vector<BLOTLINEVERTEX> vertices(6);
+    BLOTLINEVERTEX vertices[6];
     const float xy[6][2]={{0,0},{1,0},{0,1},{0,1},{1,0},{1,1}};
     for(unsigned i=0;i<6;++i) {
         vertices[i].position=glm::vec3(x+xy[i][0]*w,y+xy[i][1]*h,0);
         vertices[i].uv=glm::vec2(xy[i][0],1-xy[i][1]);vertices[i].color=color;
     }
-    CaneGlyphsNative(vertices,texture);
+    CaneAppendHudVertices(vertices,6,texture,false);
 }
 #include "runtime_ui.inc"
 #include "runtime_bottom_ui.inc"
@@ -104,6 +141,7 @@ RPL& CaneQueueNative(const RPL& packet) {
     if(canePackets.size()>=20000)throw std::runtime_error("Native packet limit exceeded");
     static RPL context;context=packet;return context;
 }
+static std::vector<const LIGHT*> caneDynamicLights;
 void CaneSubmitNative(const RPL& packet) {
 
     if(packet.rp==RP_DynamicTexture) {
@@ -123,11 +161,13 @@ void CaneSubmitNative(const RPL& packet) {
        packet.rp!=RP_WorldMap && !(caneTvContext && packet.rp==RP_BlotContext))return;
     if(canePackets.size()>=20000)throw std::runtime_error("Native packet limit exceeded");
     bool liveLight=false;
-    if(packet.ro.fDynamicLight)for(LIGHT* light=g_psw->dlLight.plightFirst;light;light=light->dleLight.plightNext) {
-        if(!light->fDynamic || !FIsLoInWorld(light))continue;
-        glm::vec3 center=glm::vec3(packet.ro.model*glm::vec4(packet.pglob->posCenter,1));
-        float radius=packet.pglob->sRadius+light->lmFallOffS.gMax;
-        if(light->lightk==LIGHTK_Direction || glm::distance2(center,light->xf.posWorld)<=radius*radius) {liveLight=true;break;}
+    if(packet.ro.fDynamicLight && !caneDynamicLights.empty()) {
+        const glm::vec3 center=glm::vec3(packet.ro.model*glm::vec4(packet.pglob->posCenter,1));
+        for(const LIGHT* light:caneDynamicLights) {
+            if(light->lightk==LIGHTK_Direction) {liveLight=true;break;}
+            const float radius=packet.pglob->sRadius+light->lmFallOffS.gMax;
+            if(glm::distance2(center,light->xf.posWorld)<=radius*radius) {liveLight=true;break;}
+        }
     }
     canePackets.push_back({packet.pglob,packet.palo,packet.ro.model,packet.ro.uAlpha,packet.rp,packet.z,packet.ro.darken,packet.ro.fDynamic!=0 || caneTvContext || packet.rp==RP_WorldMap,liveLight || caneTvContext,caneTvContext});
 }
@@ -141,17 +181,24 @@ class CaneRuntimeGraphics {
     static inline void setVertexColor(Vertex& v,float r,float g,float b,float a) {
         v.color[0]=packByte(r);v.color[1]=packByte(g);v.color[2]=packByte(b);v.color[3]=packByte(a);
     }
-    struct IndexBuf {uint16_t* data=nullptr;unsigned count=0;const INDICE* source=nullptr;GLuint vao=0;};
-    struct WorldChunk {Vertex* vertices=nullptr;unsigned used=0;unsigned dirtyMin=~0u;unsigned dirtyMax=0;};
+    struct IndexBuf {uint16_t* data=nullptr;unsigned count=0;const INDICE* source=nullptr;GLuint vao=0;u32 physOffset=~0u;};
+    struct WorldChunk {Vertex* vertices=nullptr;unsigned used=0;unsigned dirtyMin=~0u;unsigned dirtyMax=0;u32 bufOffset=0;};
     static constexpr unsigned kWorldChunkVerts=65536;
     static constexpr unsigned kMaxWorldChunks=12;
     std::vector<WorldChunk> worldChunks;
+    static constexpr unsigned kLocalChunkVerts=16384;
+    static constexpr unsigned kMaxLocalChunks=16;
+    std::vector<WorldChunk> localChunks;
+    struct LocalFreeBlock {int chunk=-1;unsigned base=0;unsigned cap=0;};
+    std::vector<LocalFreeBlock> localFreeList;
     struct SubCache {
         int worldChunk=-1;unsigned worldBase=0;
         std::vector<uint16_t> worldIndices;
-        Vertex* localVerts=nullptr;size_t count=0;const VERTICE* source=nullptr;
-        const uint16_t* localIndices=nullptr;unsigned localIndexCount=0;
+        Vertex* localVerts=nullptr;u32 localBufOffset=0;size_t count=0;const VERTICE* source=nullptr;
+        int localChunk=-1;unsigned localBase=0;unsigned localCap=0;bool localOwned=false;
+        const uint16_t* localIndices=nullptr;unsigned localIndexCount=0;u32 localIdxPhysOffset=~0u;
         glm::vec3 worldCenter{0};float worldRadius=0;
+        uint16_t batchKey=0xFFFFu;
         uint8_t texMode=0;int16_t id0=-1,id1=-1,id2=-1;
         C3D_Tex* tex0=nullptr;C3D_Tex* tex1=nullptr;C3D_Tex* tex2=nullptr;
         bool texValid=false;bool threeWay=false;bool hasSoftAlpha=false;
@@ -168,41 +215,83 @@ class CaneRuntimeGraphics {
     struct GlobKeyHash {
         size_t operator()(const GlobKey& k) const {return (uintptr_t(k.glob)>>4)^(uintptr_t(k.palo)*2654435761u);}
     };
+    static inline float fastRsqrt(float x) {
+        uint32_t i;
+        std::memcpy(&i,&x,sizeof(i));
+        i=0x5f3759dfu-(i>>1);
+        float y;
+        std::memcpy(&y,&i,sizeof(y));
+        return y*(1.5f-0.5f*x*y*y);
+    }
+    enum class DrawKind : uint8_t { Opaque,StandardAlpha,BinaryCutout,TwoPassAlpha,TwoPassAdditive,OnePassAlpha,OnePassAdditive,ProjVolume };
+    enum class BlendMode : uint8_t { Opaque,Alpha,Additive,Unknown };
     struct Draw {
-        const Vertex* vertices;const uint16_t* indices;unsigned count;
+        const Vertex* vertices;u32 bufOffset;const uint16_t* indices;unsigned count;
         C3D_Tex* tex0;C3D_Tex* tex1;C3D_Tex* tex2;uint8_t texMode;bool worldBaked;bool flipped;bool hasSoftAlpha;
         const CanePacket* material;RP phase;float distance;const SHD* shader;const SUBGLOB* sub;
+        uint32_t mvpIdx;float tintDarken,tintAlpha;DrawKind kind;u32 idxPhysOffset=~0u;
+    };
+    struct BatchKeyDesc {
+        int chunkIdx=-1;uint8_t texMode=0;C3D_Tex* tex0=nullptr;C3D_Tex* tex1=nullptr;C3D_Tex* tex2=nullptr;
+        bool operator==(const BatchKeyDesc& o) const {
+            return chunkIdx==o.chunkIdx && texMode==o.texMode && tex0==o.tex0 && tex1==o.tex1 && tex2==o.tex2;
+        }
+    };
+    struct BatchKeyHash {
+        size_t operator()(const BatchKeyDesc& k) const {
+            size_t h=size_t(k.chunkIdx)*2654435761u^k.texMode;
+            h^=uintptr_t(k.tex0)*1140071481u;
+            h^=uintptr_t(k.tex1)*1402946736u;
+            h^=uintptr_t(k.tex2)*1609587929u;
+            return h^(h>>16);
+        }
     };
     struct BatchEntry {
-        const uint16_t* src;unsigned count;int chunkIdx;uint8_t texMode;
-        C3D_Tex* tex0;C3D_Tex* tex1;C3D_Tex* tex2;
+        const uint16_t* src;unsigned count;uint16_t key;float distSq;
     };
     struct MergedDraw {
         int chunkIdx;uint8_t texMode;C3D_Tex* tex0;C3D_Tex* tex1;C3D_Tex* tex2;
-        unsigned indexOffset;unsigned indexCount;
+        unsigned indexOffset;unsigned indexCount;float minDistSq;
     };
     struct FadedWorldDraw {
-        const uint16_t* src;unsigned count;const Vertex* chunkVerts;uint8_t texMode;
+        const uint16_t* src;unsigned count;const Vertex* chunkVerts;u32 bufOffset;uint8_t texMode;
         C3D_Tex* tex0;C3D_Tex* tex1;C3D_Tex* tex2;const CanePacket* material;RP phase;const SUBGLOB* sub;bool hasSoftAlpha;
     };
     struct ShadowReceiver {
         unsigned mapIndex;const Vertex* vertices;const CanePacket* packet;const SUBGLOB* sub;bool worldBaked;
     };
-    struct CasterSub {const Vertex* vertices;const uint16_t* indices;unsigned indexCount;};
-    struct ShadowPass {unsigned firstSub,subCount,overlayFirst=0,overlayCount=0;glm::mat4 projection;float alpha;};
-    struct CasterVert {const SUBGLOB* sub;const Vertex* vertices;};
+    struct CasterSub {const Vertex* vertices;u32 bufOffset;const uint16_t* indices;unsigned indexCount;};
+    struct ShadowPass {unsigned firstSub,subCount,overlayFirst=0,overlayCount=0;glm::mat4 projection;float alpha;bool renderMap=true;};
+    struct CasterVert {const SUBGLOB* sub;const Vertex* vertices;u32 bufOffset;};
     struct ParticleDraw {unsigned first,count;C3D_Tex* tex;bool additive;uint8_t maxAlpha;};
     struct HudDraw {
         unsigned first,count;C3D_Tex* tex;TV* tv;bool additive=false;
         CaneHudLayer layer=CaneHudLayer::Top;
         float scale=1,dx=0,dy=0;
     };
-    struct OutlineLine {glm::vec4 a,b,color;glm::vec2 offset;};
     struct ActivePose {size_t index;float weight;};
     DVLB_s* shader=nullptr;shaderProgram_s program{};
     DVLB_s* movieShader=nullptr;shaderProgram_s movieProgram{};
     bool movieProgramStarted=false;
     int movieProjection=-1,movieTint=-1;
+    DVLB_s* stereo1Shader=nullptr;shaderProgram_s stereo1Program{};
+    bool stereo1ProgramStarted=false;
+    DVLB_s* flat1Shader=nullptr;shaderProgram_s flat1Program{};
+    bool flat1ProgramStarted=false;
+    shaderProgram_s* boundProgram=nullptr;
+    bool sceneUseStereo=false;
+    bool tintValid=false;bool inFrameCmd=false;float lastTintR=0,lastTintG=0,lastTintB=0,lastTintA=0;
+    static u32 physOffsetFor(const void* ptr) {
+        if(!ptr)return ~0u;
+        const u32 phys=osConvertVirtToPhys(const_cast<void*>(ptr));
+        return phys>=0x18000000u?(phys-0x18000000u):~0u;
+    }
+    static u32 bufOffsetFor(const void* ptr) {
+        C3D_BufInfo info;
+        BufInfo_Init(&info);
+        BufInfo_Add(&info,ptr,sizeof(Vertex),3,0x210);
+        return info.buffers[0].offset;
+    }
     C3D_RenderTarget* target=nullptr;
     C3D_RenderTarget* rightTarget=nullptr;
     C3D_RenderTarget* bottomTarget=nullptr;
@@ -262,9 +351,10 @@ class CaneRuntimeGraphics {
         std::vector<uint8_t> celValid;
         std::vector<glm::vec4> shadowUv;
         std::vector<uint8_t> shadowMask;
+        std::vector<uint8_t> boneReady;
         void reserveDefault() {
             meshLights.reserve(64);boneNormMats.reserve(64);activePoses.reserve(16);
-            boneMvps.reserve(64);celClip.reserve(1024);celNdc.reserve(1024);celValid.reserve(1024);
+            boneMvps.reserve(64);boneReady.reserve(64);celClip.reserve(1024);celNdc.reserve(1024);celValid.reserve(1024);
             shadowUv.reserve(512);shadowMask.reserve(512);
         }
     };
@@ -284,8 +374,24 @@ class CaneRuntimeGraphics {
     static size_t vramTextureHeadroom(int mode) {
         return mode==3?384u*1024u:512u*1024u;
     }
-    struct ShadowMap {C3D_Tex texture{};C3D_RenderTarget* target=nullptr;};
+    struct ShadowMap {
+        C3D_Tex texture{};C3D_RenderTarget* target=nullptr;
+        const DYSH* lastOwner=nullptr;glm::mat4 lastProjection{0};
+        float lastAlpha=-1.0f;uint64_t lastPoseHash=0;
+        unsigned lastUpdateFrame=0;bool valid=false;
+    };
     ShadowMap shadowMaps[4];
+    static uint64_t hashCasterState(const DYSH* owner) {
+        const auto& set=owner->globset;
+        uint64_t meta[4]={uint64_t(set.boneMatrices.size()),uint64_t(set.agPoses.size()),uint64_t(set.aglob.size()),
+                          set.aglob.empty()?0ull:uint64_t(set.aglob[0].VAO)};
+        uint64_t h=cane_texture_etc::hashBytes(reinterpret_cast<const uint8_t*>(meta),sizeof(meta));
+        if(!set.boneMatrices.empty())
+            h=cane_texture_etc::hashBytes(reinterpret_cast<const uint8_t*>(set.boneMatrices.data()),set.boneMatrices.size()*sizeof(glm::mat4),h);
+        if(!set.agPoses.empty())
+            h=cane_texture_etc::hashBytes(reinterpret_cast<const uint8_t*>(set.agPoses.data()),set.agPoses.size()*sizeof(float),h);
+        return h;
+    }
     struct TexSlot {C3D_Tex tex{};bool loaded=false;bool inVram=false;};
     std::vector<TexSlot> textures;
     std::vector<cane_texture_etc::PreparedImage> preparedImages;
@@ -301,10 +407,35 @@ class CaneRuntimeGraphics {
     struct CelCache {const CELPOINT* source=nullptr;size_t count=0;GLuint vao=0;std::vector<unsigned> indices,first;};
     std::deque<CelCache> celCachePool;
     CaneFlatMap<const GLOB*,uint32_t,CanePtrHash> celCacheMap;
-    Vertex* dynamic[2]{};size_t dynamicCapacity=0,meshBytes=0;
-    Vertex* postQuad=nullptr;
-    uint16_t* batchIndices[2]{};size_t batchIndexCapacity=0;
+    Vertex* dynamic[2]{};u32 dynamicBufOffset[2]{};size_t dynamicCapacity=0,meshBytes=0;
+    Vertex* postQuad=nullptr;u32 postQuadBufOffset=0;
+    uint16_t* batchIndices[2]{};u32 batchIndicesPhys[2]{~0u,~0u};size_t batchIndexCapacity=0;
     unsigned slot=0,frame=0;
+    CaneFlatMap<BatchKeyDesc,uint16_t,BatchKeyHash> batchKeyMap;
+    std::vector<BatchKeyDesc> batchKeyTable;
+    std::vector<uint32_t> bucketHead,entryNext;
+    std::vector<uint16_t> touchedKeys;
+    struct LiveKey {
+        const SUBGLOB* sub=nullptr;const ALO* palo=nullptr;
+        bool operator==(const LiveKey& o) const {return sub==o.sub && palo==o.palo;}
+    };
+    struct LiveKeyHash {
+        size_t operator()(const LiveKey& k) const {return (uintptr_t(k.sub)>>4)^(uintptr_t(k.palo)*2654435761u);}
+    };
+    struct LiveEntry {
+        Vertex* verts[2]{nullptr,nullptr};u32 bufOffset[2]{0,0};
+        int chunk[2]{-1,-1};unsigned base[2]{0,0};unsigned cap[2]{0,0};bool owned[2]{false,false};
+        const VERTICE* source=nullptr;size_t count=0;GLuint vao=0;
+        glm::mat4 model{1};
+        uint8_t curSlot=0,texMode=0;bool hasSoftAlpha=false;
+        int16_t i0=-1,i1=-1,i2=-1;
+        unsigned lastRelightFrame=0,usedFrame=0,seenThisFrame=0;
+    };
+    CaneFlatMap<LiveKey,LiveEntry,LiveKeyHash> liveLightCache;
+    struct LiveDecision {uint32_t packetIdx=0,subIdx=0;bool active=false,relit=false;};
+    std::vector<LiveDecision> liveDecisions;
+    struct OwnedLiveFlush {Vertex* ptr=nullptr;size_t bytes=0;};
+    std::vector<OwnedLiveFlush> ownedLiveFlush;
     std::vector<Draw> phaseBuckets[RP_Max],tvDraws;
     std::vector<BatchEntry> staticBatches[RP_Max];
     std::vector<MergedDraw> mergedDraws[RP_Max];
@@ -315,15 +446,20 @@ class CaneRuntimeGraphics {
     std::vector<ShadowPass> shadowPasses;
     std::vector<ParticleDraw> particleDraws;
     std::vector<HudDraw> hudDraws;
-    std::vector<OutlineLine> outlineLines;
     static constexpr unsigned outlineBudget=4096;
     static bool isBinaryAlphaTex(const C3D_Tex* tex) {
         return !tex || tex->fmt==GPU_RGBA5551 || tex->fmt==GPU_ETC1;
     }
     struct CelJob {const RPLCEL* packet;const CelCache* cache;glm::mat4 mvp;glm::vec4 color;float minLinePixels;};
-    struct alignas(32) AnimJob {uint32_t packetIdx,subIdx,dynOffset,boneNormOffset,boneNormCount;float scale;uint8_t texMode;bool hasSoftAlpha;int16_t i0,i1,i2;};
+    struct alignas(32) AnimJob {
+        uint32_t packetIdx,subIdx,dynOffset,boneNormOffset,boneNormCount;
+        float scale;uint8_t texMode;bool hasSoftAlpha;bool forceOneTex;int16_t i0,i1,i2;
+        Vertex* dstOverride=nullptr;LiveKey liveKey{};uint8_t liveWriteSlot=0;
+    };
     struct AnimDrawSlot {uint32_t drawIdx;uint8_t bucket;bool isTv;};
     struct HudJob {const CaneHudBatch* hud;uint32_t dynOffset;};
+    struct CasterJob {uint32_t mapIndex;GLOB* glob;SUBGLOB* sub;uint32_t dynOffset;float scale;};
+    struct ParticleJob {uint32_t packetIdx;uint32_t maxBlips;C3D_Tex* tableTex[32]{};};
     struct ShadowMapJobInfo {const SHADOW* shadow;glm::vec3 negCastDir;glm::vec3 camPos;float cl;uint8_t alphaByte;};
     enum class WaveMode : uint32_t {None=0,Prep1=1,ShadowClip=2};
     static constexpr unsigned kMaxWorkers=2;
@@ -344,11 +480,16 @@ class CaneRuntimeGraphics {
     WaveMode waveMode=WaveMode::None;
     uint32_t waveNextJob=0,waveTotalJobs=0;
     std::vector<CelJob> celJobs;
-    std::vector<std::vector<OutlineLine>> celJobOut;
+    std::vector<std::vector<Vertex>> celJobVerts;
     std::vector<AnimJob> animJobs;
     std::vector<AnimDrawSlot> animDrawSlots;
     std::vector<glm::mat3> allBoneNormMats;
     std::vector<HudJob> hudJobs;
+    std::vector<CasterJob> casterJobs;
+    std::vector<ParticleJob> particleJobs;
+    std::vector<std::vector<Vertex>> particleJobVerts;
+    std::vector<std::vector<ParticleDraw>> particleJobDraws;
+    glm::vec3 frameCamRight{1,0,0},frameCamUp{0,1,0};
     ShadowMapJobInfo shadowMapInfo[4]{};
     std::vector<std::vector<Vertex>> shadowJobOut;
     std::vector<C3D_Mtx> packetMvps;
@@ -418,6 +559,51 @@ class CaneRuntimeGraphics {
     C3D_Tex* selectedTexture(int image,C3D_Tex* original) {
         return image==buttonImage && newButtonTexture.data && CaneUseNewButtons3ds()?&newButtonTexture:original;
     }
+    static void generateMipmaps16(uint16_t* base,unsigned width,unsigned height,int maxLevel,bool rgba4) {
+        const uint16_t* src=base;
+        unsigned sw=width,sh=height;
+        for(int lvl=1;lvl<=maxLevel;++lvl) {
+            const unsigned dw=sw>>1,dh=sh>>1;
+            uint16_t* dst=const_cast<uint16_t*>(src)+size_t(sw)*sh;
+            const unsigned sTilesW=sw>>3,dTilesW=dw>>3;
+            for(unsigned dy=0;dy<dh;++dy) {
+                const unsigned sy=dy<<1,dty=(dy>>3)*dTilesW,sty=(sy>>3)*sTilesW;
+                for(unsigned dx=0;dx<dw;++dx) {
+                    const unsigned sx=dx<<1;
+                    const unsigned sBase=(sty+(sx>>3))*64u+morton(sx,sy);
+                    const unsigned dIdx=(dty+(dx>>3))*64u+morton(dx,dy);
+                    const uint16_t p0=src[sBase],p1=src[sBase+1],p2=src[sBase+2],p3=src[sBase+3];
+                    if(rgba4) {
+                        const unsigned r=(((p0>>12)&15)+((p1>>12)&15)+((p2>>12)&15)+((p3>>12)&15)+2)>>2;
+                        const unsigned g=(((p0>>8)&15)+((p1>>8)&15)+((p2>>8)&15)+((p3>>8)&15)+2)>>2;
+                        const unsigned b=(((p0>>4)&15)+((p1>>4)&15)+((p2>>4)&15)+((p3>>4)&15)+2)>>2;
+                        const unsigned a=((p0&15)+(p1&15)+(p2&15)+(p3&15)+2)>>2;
+                        dst[dIdx]=uint16_t((r<<12)|(g<<8)|(b<<4)|a);
+                    } else {
+                        const unsigned a0=p0&1u,a1=p1&1u,a2=p2&1u,a3=p3&1u;
+                        const unsigned aCnt=a0+a1+a2+a3;
+                        if(aCnt>0) {
+                            unsigned r=0,g=0,b=0;
+                            if(a0) {r+=(p0>>11)&31;g+=(p0>>6)&31;b+=(p0>>1)&31;}
+                            if(a1) {r+=(p1>>11)&31;g+=(p1>>6)&31;b+=(p1>>1)&31;}
+                            if(a2) {r+=(p2>>11)&31;g+=(p2>>6)&31;b+=(p2>>1)&31;}
+                            if(a3) {r+=(p3>>11)&31;g+=(p3>>6)&31;b+=(p3>>1)&31;}
+                            r=(r+(aCnt>>1))/aCnt;
+                            g=(g+(aCnt>>1))/aCnt;
+                            b=(b+(aCnt>>1))/aCnt;
+                            dst[dIdx]=uint16_t((r<<11)|(g<<6)|(b<<1)|(aCnt>=2?1u:0u));
+                        } else {
+                            const unsigned r=(((p0>>11)&31)+((p1>>11)&31)+((p2>>11)&31)+((p3>>11)&31)+2)>>2;
+                            const unsigned g=(((p0>>6)&31)+((p1>>6)&31)+((p2>>6)&31)+((p3>>6)&31)+2)>>2;
+                            const unsigned b=(((p0>>1)&31)+((p1>>1)&31)+((p2>>1)&31)+((p3>>1)&31)+2)>>2;
+                            dst[dIdx]=uint16_t((r<<11)|(g<<6)|(b<<1));
+                        }
+                    }
+                }
+            }
+            src=dst;sw=dw;sh=dh;
+        }
+    }
     C3D_Tex* texture(int image,bool atlas=false,bool smoothAlpha=false,unsigned limit=128) {
         if(image<0 || size_t(image)>=g_abmp.size())return &white;
         if(size_t(image)<textures.size() && textures[image].loaded)return selectedTexture(image,&textures[image].tex);
@@ -471,26 +657,37 @@ class CaneRuntimeGraphics {
             atlasKey=cane_texture_etc::hashBytes(source.diffuseTexture.data(),source.diffuseTexture.size(),atlasKey);
             for(const auto& entry:sharedAtlases)if(entry.key==atlasKey && entry.pixels.size()==bytes) {sharedPixels=&entry.pixels;break;}
         }
+        const bool useMipmaps=!atlas && !textAtlas && !controllerAtlas &&
+            fmt!=GPU_ETC1 && (fmt==GPU_RGBA5551 || fmt==GPU_RGBA4) &&
+            width>=16 && height>=16;
+        const int maxLevel=useMipmaps?std::min(2,C3D_TexCalcMaxLevel(width,height)):0;
+        const size_t totalBytes=(maxLevel>0)?size_t(C3D_TexCalcTotalSize(u32(bytes),maxLevel)):bytes;
         C3D_Tex tex{};
         bool inVram=false;
-        if(!atlas && vramTextureBytes+bytes<=vramTextureBudget(displayMode) && vramSpaceFree()>=bytes+vramTextureHeadroom(displayMode)) {
-            inVram=C3D_TexInitVRAM(&tex,width,height,fmt);
+        if((!atlas || (textAtlas && vramTextureBudget(displayMode)>=2560u*1024u)) &&
+           vramTextureBytes+totalBytes<=vramTextureBudget(displayMode) &&
+           vramSpaceFree()>=totalBytes+vramTextureHeadroom(displayMode)) {
+            C3D_TexInitParams params{u16(width),u16(height),u8(maxLevel),fmt,GPU_TEX_2D,true};
+            inVram=C3D_TexInitWithParams(&tex,nullptr,params);
         }
-        if(!inVram && !C3D_TexInit(&tex,width,height,fmt))throw std::runtime_error("Actor texture allocation failed");
+        if(!inVram) {
+            C3D_TexInitParams params{u16(width),u16(height),u8(maxLevel),fmt,GPU_TEX_2D,false};
+            if(!C3D_TexInitWithParams(&tex,nullptr,params))throw std::runtime_error("Actor texture allocation failed");
+        }
         auto& slotEntry=textures[image];slotEntry.tex=tex;slotEntry.loaded=true;slotEntry.inVram=inVram;
         uint16_t* out=nullptr;
         if(inVram) {
-            if(bytes>texStageBytes) {
+            if(totalBytes>texStageBytes) {
                 if(texStage)linearFree(texStage);
-                texStage=static_cast<uint16_t*>(linearAlloc(bytes));
+                texStage=static_cast<uint16_t*>(linearAlloc(totalBytes));
                 if(!texStage) {texStageBytes=0;throw std::runtime_error("Texture staging allocation failed");}
-                texStageBytes=bytes;
+                texStageBytes=totalBytes;
             }
             out=texStage;
-            ++vramTexCount;vramTextureBytes+=bytes;
+            ++vramTexCount;vramTextureBytes+=totalBytes;
         } else {
             out=static_cast<uint16_t*>(slotEntry.tex.data);
-            ++fcramTexCount;fcramTextureBytes+=bytes;
+            ++fcramTexCount;fcramTextureBytes+=totalBytes;
         }
         // Extend ink colour through transparent padding so linear sampling
         // does not multiply edge coverage by a second dark colour fringe.
@@ -534,15 +731,17 @@ class CaneRuntimeGraphics {
                 sharedAtlases.push_back(std::move(entry));sharedAtlasBytes+=bytes;
             }catch(const std::bad_alloc&) {}
         }
+        if(maxLevel>0)generateMipmaps16(out,width,height,maxLevel,fmt==GPU_RGBA4);
         if(textAtlas)std::fprintf(stderr,"Native text atlas: %ux%u LA8, full 8-bit glyph coverage\n",width,height);
         if(textAtlas)std::fprintf(stderr,"Native text readability: full-resolution point sampling, reduced stroke weight\n");
         // Text must not inherit the world's bilinear smoothing.
         C3D_TexSetFilter(&slotEntry.tex,textAtlas?GPU_NEAREST:GPU_LINEAR,
                         textAtlas?GPU_NEAREST:GPU_LINEAR);
+        if(maxLevel>0)C3D_TexSetFilterMipmap(&slotEntry.tex,GPU_NEAREST);
         C3D_TexSetWrap(&slotEntry.tex,GPU_REPEAT,GPU_REPEAT);
         if(inVram) {
-            GSPGPU_FlushDataCache(texStage,bytes);
-            C3D_TexUpload(&slotEntry.tex,texStage);
+            GSPGPU_FlushDataCache(texStage,totalBytes);
+            C3D_TexLoadImage(&slotEntry.tex,texStage,GPU_TEXFACE_2D,maxLevel>0?-1:0);
         } else {
             C3D_TexFlush(&slotEntry.tex);
         }
@@ -571,8 +770,21 @@ class CaneRuntimeGraphics {
         return selectedTexture(image,&slotEntry.tex);
     }
 
+    static bool hasActivePose(const CanePacket& packet) {
+        if(packet.pglob->poseCount<=0)return false;
+        const auto& agPoses=packet.palo->globset.agPoses;
+        const size_t np=std::min(agPoses.size(),size_t(packet.pglob->poseCount));
+        for(size_t i=0;i<np;++i)if(std::abs(agPoses[i])>1e-5f)return true;
+        return false;
+    }
+    static bool animated(const CanePacket& packet,const SUBGLOB& sub,bool activePose) {
+        return packet.liveLight || (sub.cibnd>0 && packet.palo->globset.cbnd>0) || activePose;
+    }
     static bool animated(const CanePacket& packet,const SUBGLOB& sub) {
-        return packet.liveLight || (sub.cibnd>0 && packet.palo->globset.cbnd>0) || packet.pglob->poseCount>0;
+        return animated(packet,sub,hasActivePose(packet));
+    }
+    static bool isLiveLightOnly(const CanePacket& packet,const SUBGLOB& sub,bool activePose) {
+        return packet.liveLight && !packet.tv && !(sub.cibnd>0 && packet.palo->globset.cbnd>0) && !activePose;
     }
     static void resolveThreeWayImages(const SUBGLOB& sub,int fallback,int& i0,int& i1,int& i2) {
         const auto& tex=sub.pshd->atex[0];int f=sub.uvSai?sub.uvSai->iframe:0;
@@ -621,15 +833,15 @@ class CaneRuntimeGraphics {
             *dst++=tri.v3<nVerts?tri.v3:0;
         }
         GSPGPU_FlushDataCache(buf.data,bytes);
-        buf.count=count;buf.source=sub.indices.data();buf.vao=vao;
+        buf.count=count;buf.source=sub.indices.data();buf.vao=vao;buf.physOffset=physOffsetFor(buf.data);
         return buf;
     }
     u64 tkAnim=0,tkMoved=0;
-    void shadeVertex(WorkerScratch& sc,Vertex& vertex,const SUBGLOB& sub,size_t index,const glm::vec3& world,glm::vec3 normal,bool alreadyWorldNorm,const glm::mat3& normalMat,float baseAmbient,float baseMid,bool sameAll,bool sameSatDiff,uint8_t& maxR,uint8_t& maxB) const {
+    void shadeVertex(WorkerScratch& sc,Vertex& vertex,const SUBGLOB& sub,size_t index,const glm::vec3& world,glm::vec3 normal,bool alreadyWorldNorm,const glm::mat3& normalMat,float baseAmbient,float baseMid,bool sameAll,bool sameSatDiff,bool approxOneTex,uint8_t& maxR,uint8_t& maxB) const {
         const auto& input=sub.vertices[index];
         if(!alreadyWorldNorm)normal=normalMat*normal;
         const float nlSq=glm::dot(normal,normal);
-        normal=nlSq>1e-8f?normal*(1.0f/std::sqrt(nlSq)):glm::vec3(0);
+        normal=nlSq>1e-8f?normal*fastRsqrt(nlSq):glm::vec3(0);
         float ambient=baseAmbient,mid=baseMid;glm::vec3 highlight(0);
         for(const auto& pl:sc.meshLights) {
             float attenuation=1,diffuse=0;
@@ -639,7 +851,7 @@ class CaneRuntimeGraphics {
                 const glm::vec3 direction=pl.pos-world;
                 const float distSq=glm::dot(direction,direction);
                 if(distSq<1e-8f || distSq>pl.maxRSq)continue;
-                const float invLen=1.0f/std::sqrt(distSq);
+                const float invLen=fastRsqrt(distSq);
                 diffuse=glm::dot(normal,direction)*invLen;
                 attenuation=std::clamp(pl.fallOffX+pl.fallOffY*invLen,0.0f,1.0f);
             } else if(pl.kind==LIGHTK_Frustrum || pl.kind==LIGHTK_Spot) {
@@ -670,6 +882,9 @@ class CaneRuntimeGraphics {
         if(sameAll) {
             float s=std::min(1.0f,wR+wG+wB);
             setVertexColor(vertex,s,s,s,wA);
+        } else if(approxOneTex) {
+            float s=std::min(1.0f,wR*0.6f+wG+wB*1.25f);
+            setVertexColor(vertex,s,s,s,wA);
         } else {
             if(sameSatDiff) {wG=std::min(1.0f,wG+wB);wB=0.0f;}
             setVertexColor(vertex,wR,wG,wB,wA);
@@ -677,7 +892,7 @@ class CaneRuntimeGraphics {
             if(vertex.color[2]>maxB)maxB=vertex.color[2];
         }
     }
-    void flatten(WorkerScratch& sc,Vertex* out,const CanePacket& packet,const SUBGLOB& sub,bool skin,bool bakeWorld,bool lit,float modelMaxScale,const glm::mat3* precompBoneNorms=nullptr,size_t precompBoneCount=0,uint8_t* outTexMode=nullptr,int* outI0=nullptr,int* outI1=nullptr,int* outI2=nullptr,bool* outSoftAlpha=nullptr) const {
+    void flatten(WorkerScratch& sc,Vertex* out,const CanePacket& packet,const SUBGLOB& sub,bool skin,bool bakeWorld,bool lit,float modelMaxScale,const glm::mat3* precompBoneNorms=nullptr,size_t precompBoneCount=0,uint8_t* outTexMode=nullptr,int* outI0=nullptr,int* outI1=nullptr,int* outI2=nullptr,bool* outSoftAlpha=nullptr,bool forceOneTex=false) const {
         sc.meshLights.clear();
         const bool isThreeWay=sub.pshd && sub.pshd->shdk==SHDK_ThreeWay;
         const bool hasThreeWayTex=isThreeWay && !sub.pshd->atex.empty();
@@ -708,12 +923,17 @@ class CaneRuntimeGraphics {
         int i0=-1,i1=-1,i2=-1;uint8_t texMode=0;
         const int fallback=imageFor(sub);
         const bool staticTex=(sub.uvSai==nullptr);
-        bool sameAll=false,sameSatDiff=false;
+        bool sameAll=false,sameSatDiff=false,approxOneTex=false;
         if(lit && hasThreeWayTex) {
             resolveThreeWayImages(sub,fallback,i0,i1,i2);
             sameAll=staticTex && (i0==i1) && (i2==i1);
             sameSatDiff=staticTex && !sameAll && (i2==i1);
-            texMode=sameAll?0:(sameSatDiff?1:2);
+            if(!sameAll && staticTex && forceOneTex) {
+                approxOneTex=true;
+                texMode=0;
+            } else {
+                texMode=sameAll?0:(sameSatDiff?1:2);
+            }
         } else if(lit && isThreeWay) {
             i0=-1;sameAll=true;texMode=0;
         } else {
@@ -787,27 +1007,29 @@ class CaneRuntimeGraphics {
             vertex.position[0]=outPos.x;vertex.position[1]=outPos.y;vertex.position[2]=outPos.z;
             vertex.uv[0]=input.uv.x;vertex.uv[1]=1.0f-input.uv.y;
             if(doLight) {
-                shadeVertex(sc,vertex,sub,index,world,normal,alreadyWorldNorm,normalMat,baseAmbient,baseMid,sameAll,sameSatDiff,maxR,maxB);
+                shadeVertex(sc,vertex,sub,index,world,normal,alreadyWorldNorm,normalMat,baseAmbient,baseMid,sameAll,sameSatDiff,approxOneTex,maxR,maxB);
             } else {
                 setVertexColor(vertex,input.color.r,input.color.g,input.color.b,input.color.a);
             }
             if(vertex.color[3]>0 && vertex.color[3]<230)softAlpha=true;
         }
         if(lit && hasThreeWayTex && staticTex) {
-            if(sameAll) {
+            if(sameAll || approxOneTex) {
                 texMode=0;i0=i1;i1=-1;i2=-1;
-            } else if(maxB==0) {
-                if(maxR==0) {
-                    for(size_t i=0;i<vCount;++i) {uint8_t g=out[i].color[1];out[i].color[0]=g;out[i].color[2]=g;}
-                    texMode=0;i0=i1;i1=-1;i2=-1;
-                } else if(i0==i1) {
+            } else if(maxB<8) {
+                if(maxR<8 || i0==i1) {
                     for(size_t i=0;i<vCount;++i) {
-                        int s=int(out[i].color[0])+int(out[i].color[1]);
+                        int s=int(out[i].color[0])+int(out[i].color[1])+int(out[i].color[2]);
                         uint8_t u=uint8_t(s>255?255:s);
                         out[i].color[0]=u;out[i].color[1]=u;out[i].color[2]=u;
                     }
                     texMode=0;i0=i1;i1=-1;i2=-1;
                 } else {
+                    if(maxB>0)for(size_t i=0;i<vCount;++i) {
+                        int s=int(out[i].color[1])+int(out[i].color[2]);
+                        out[i].color[1]=uint8_t(s>255?255:s);
+                        out[i].color[2]=0;
+                    }
                     texMode=1;i2=-1;
                 }
             } else {
@@ -826,12 +1048,13 @@ class CaneRuntimeGraphics {
         const auto& cache=*job.cache;
         const glm::mat4& mvp=job.mvp;
         const glm::vec4& color=job.color;
-        auto& out=celJobOut[idx];
+        auto& out=celJobVerts[idx];
         out.clear();
         const bool hasCelSkin=set.cbnd>0 && !set.boneMatrices.empty();
+        const size_t nB=hasCelSkin?set.boneMatrices.size():0;
         if(hasCelSkin) {
-            sc.boneMvps.resize(set.boneMatrices.size());
-            for(size_t b=0;b<set.boneMatrices.size();++b)sc.boneMvps[b]=mvp*set.boneMatrices[b];
+            sc.boneMvps.resize(nB);
+            sc.boneReady.assign(nB,0);
         }
         sc.activePoses.clear();
         if(glob.poseCount>0 && !set.agPoses.empty()) {
@@ -842,7 +1065,6 @@ class CaneRuntimeGraphics {
             }
         }
         const bool hasActiveCelPoses=!sc.activePoses.empty();
-        const size_t nB=sc.boneMvps.size();
         const size_t nUnique=cache.first.size();
         sc.celClip.resize(nUnique);
         sc.celNdc.resize(nUnique);
@@ -859,10 +1081,15 @@ class CaneRuntimeGraphics {
             if(hasCelSkin) {
                 const glm::vec4 lp(glm::vec3(pos),1);
                 for(unsigned b=0;b<4;++b) {
-                    float w=input.boneWeights[b];
-                    if(w!=0 && input.boneIndices[b]<nB) {
-                        if(w==1.0f && total==0.0f) {c=sc.boneMvps[input.boneIndices[b]]*lp;total=1.0f;break;}
-                        c+=sc.boneMvps[input.boneIndices[b]]*lp*w;total+=w;
+                    const float w=input.boneWeights[b];
+                    const uint32_t bone=input.boneIndices[b];
+                    if(w!=0 && bone<nB) {
+                        if(!sc.boneReady[bone]) {
+                            sc.boneMvps[bone]=mvp*set.boneMatrices[bone];
+                            sc.boneReady[bone]=1;
+                        }
+                        if(w==1.0f && total==0.0f) {c=sc.boneMvps[bone]*lp;total=1.0f;break;}
+                        c+=sc.boneMvps[bone]*lp*w;total+=w;
                     }
                 }
             }
@@ -872,16 +1099,35 @@ class CaneRuntimeGraphics {
             sc.celValid[unique]=ok?1:0;
             if(ok) {float invW=1.0f/c.w;sc.celNdc[unique]=glm::vec2(c.x*invW,c.y*invW);}
         }
-        for(size_t edge=0;edge+3<glob.edgePoints.size() && out.size()<outlineBudget;edge+=4) {
+        const float minLen=std::max(.001f,job.minLinePixels);
+        const float minLenSq=minLen*minLen;
+        const uint8_t lcol[4]={packByte(color.r),packByte(color.g),packByte(color.b),packByte(color.a)};
+        static constexpr unsigned endpoints[6]={0,1,0,0,1,1};
+        static constexpr float sides[6]={-1,-1,1,1,-1,1};
+        for(size_t edge=0;edge+3<glob.edgePoints.size() && out.size()<outlineBudget*6;edge+=4) {
             const unsigned u0=cache.indices[edge+0],u1=cache.indices[edge+1],u2=cache.indices[edge+2],u3=cache.indices[edge+3];
             if(!(sc.celValid[u0] && sc.celValid[u1] && sc.celValid[u2] && sc.celValid[u3]))continue;
             const glm::vec2& a=sc.celNdc[u0],&b=sc.celNdc[u1],&c=sc.celNdc[u2],&d=sc.celNdc[u3];
             auto cross=[](glm::vec2 x,glm::vec2 y){return x.x*y.y-x.y*y.x;};
             if(cross(b-a,c-b)*cross(d-b,b-a)>0)continue;
             if((a.x<-1.02f && b.x<-1.02f)||(a.x>1.02f && b.x>1.02f)||(a.y<-1.02f && b.y<-1.02f)||(a.y>1.02f && b.y>1.02f))continue;
-            glm::vec2 delta=(b-a)*glm::vec2(120,200);float length=glm::length(delta);if(length<std::max(.001f,job.minLinePixels))continue;
-            glm::vec2 offset=glm::vec2(-delta.y,delta.x)/length*1.03125f/glm::vec2(120,200);
-            out.push_back({sc.celClip[u0],sc.celClip[u1],color,offset});
+            const glm::vec2 delta=(b-a)*glm::vec2(120,200);
+            const float lenSq=glm::dot(delta,delta);
+            if(lenSq<minLenSq)continue;
+            const float invLen=fastRsqrt(lenSq);
+            const glm::vec2 offset=glm::vec2(-delta.y,delta.x)*invLen*1.03125f/glm::vec2(120,200);
+            const glm::vec4& pa=sc.celClip[u0],&pb=sc.celClip[u1];
+            for(unsigned i=0;i<6;++i) {
+                glm::vec4 expanded=(endpoints[i]?pb:pa);
+                expanded.x+=offset.x*expanded.w*sides[i];expanded.y+=offset.y*expanded.w*sides[i];
+                expanded.z=std::clamp(expanded.z+.00001f*expanded.w,-expanded.w+.000001f,-.000001f);
+                const float invW=1.0f/expanded.w;
+                Vertex v;
+                v.position[0]=expanded.x*invW;v.position[1]=expanded.y*invW;v.position[2]=expanded.z*invW;
+                std::memcpy(v.color,lcol,4);
+                v.uv[0]=0.0f;v.uv[1]=0.0f;
+                out.push_back(v);
+            }
         }
     }
     void runAnimJob(WorkerScratch& sc,uint32_t idx) {
@@ -890,7 +1136,8 @@ class CaneRuntimeGraphics {
         const auto& sub=packet.pglob->asubglob[job.subIdx];
         const glm::mat3* precomp=job.boneNormCount?(&allBoneNormMats[job.boneNormOffset]):nullptr;
         uint8_t texMode=0;bool softAlpha=false;int i0=-1,i1=-1,i2=-1;
-        flatten(sc,dynamic[slot]+job.dynOffset,packet,sub,true,false,true,job.scale,precomp,job.boneNormCount,&texMode,&i0,&i1,&i2,&softAlpha);
+        Vertex* dst=job.dstOverride?job.dstOverride:(dynamic[slot]+job.dynOffset);
+        flatten(sc,dst,packet,sub,true,false,true,job.scale,precomp,job.boneNormCount,&texMode,&i0,&i1,&i2,&softAlpha,job.forceOneTex);
         job.texMode=texMode;job.hasSoftAlpha=softAlpha;job.i0=int16_t(i0);job.i1=int16_t(i1);job.i2=int16_t(i2);
     }
     void runHudJob(uint32_t idx) const {
@@ -906,6 +1153,80 @@ class CaneRuntimeGraphics {
             }
             vertex.uv[0]=input.uv.x;vertex.uv[1]=1.0f-input.uv.y;
             setVertexColor(vertex,input.color.r,input.color.g,input.color.b,input.color.a);
+        }
+    }
+    void runCasterJob(WorkerScratch& sc,uint32_t idx) const {
+        const auto& job=casterJobs[idx];
+        const auto& caster=caneCasters[job.mapIndex];
+        CanePacket packet{job.glob,caster.owner,caster.model,caster.alpha,RP_DynamicTexture,0};
+        flatten(sc,dynamic[slot]+job.dynOffset,packet,*job.sub,animated(packet,*job.sub),false,false,job.scale);
+    }
+    void runParticleJob(uint32_t idx) {
+        const auto& job=particleJobs[idx];
+        auto& outVerts=particleJobVerts[idx];
+        auto& outDraws=particleJobDraws[idx];
+        outVerts.clear();
+        outDraws.clear();
+        if(!job.maxBlips)return;
+        const auto& packet=caneParticles[job.packetIdx];
+        const auto& group=*packet.group;
+        if(!group.pshd || group.pshd->atex.empty())return;
+        const auto& tex=group.pshd->atex[0];
+        const auto& images=group.pshd->shdk==SHDK_ThreeWay?tex.ambientImageIndex:tex.diffuseImageIndex;
+        const int table=std::clamp(group.cqwTexture,0,32);
+        if(!table || images.empty())return;
+        const auto curve=[](const CLQ& q,float t) {return q.g0+t*(q.g1+t*q.g2);};
+        const glm::mat3 modelRot(packet.model);
+        const bool additive=(group.pshd->grfshd&1)!=0;
+        const int colors=std::clamp(group.crgba,0,32);
+        const glm::vec3 right=frameCamRight,up=frameCamUp;
+        unsigned emitted=0,links=0;
+        for(BLIP* blip=group.dlBlip.pblipFirst;blip && links++<1024 && emitted<job.maxBlips;blip=blip->dle.pblipNext) {
+            const auto& data=blip->ablipf[blip->iblipfLatest&1];
+            const int cnt=std::clamp(blip->cblipe,0,44);
+            for(int i=0;i<cnt && emitted<job.maxBlips;++i) {
+                const auto& pos=data.ablipp[i];const auto& extra=data.ablipx[i];
+                const float age=g_clock.t-pos.tCreated,scale=curve(group.clqScale,age);
+                const float alpha=std::clamp(curve(group.clqAlpha,age),0.0f,1.0f)*packet.alpha;
+                const float frameValue=curve(group.clqTexture,age);
+                if(!std::isfinite(scale)||!std::isfinite(frameValue)||alpha<=.001f)continue;
+                const int entry=((int(extra.itex0%table)+int(std::clamp(frameValue,-100000.0f,100000.0f)))%table+table)%table;
+                C3D_Tex* pt=job.tableTex[entry];
+                if(!pt)continue;
+                glm::vec4 color(1);
+                if(colors) {
+                    int c=std::min(unsigned(colors-1),unsigned(extra.irgba));color=group.argba[c];
+                    if(group.fColorRanges && c+1<colors)color=glm::mix(color,group.argba[c+1],std::clamp(curve(group.clqColor,age),0.0f,1.0f));
+                }
+                color.a*=alpha;
+                const uint8_t pcol[4]={packByte(color.r),packByte(color.g),packByte(color.b),packByte(color.a)};
+                glm::vec3 center=glm::vec3(packet.model*glm::vec4(pos.x,pos.y,pos.z,1));
+                glm::vec3 horizontal=right*scale,vertical=up*scale;
+                if(group.blipok==BLIPOK_Rolling) {
+                    float c=std::cos(extra.radRoll),s=std::sin(extra.radRoll);
+                    horizontal=(right*c+up*s)*scale;vertical=(-right*s+up*c)*scale;
+                } else if(group.blipok==BLIPOK_Flying) {
+                    const auto& v=data.ablipv[i];
+                    glm::vec3 line=modelRot*glm::vec3(v.x,v.y,v.z)*(group.rSFlying*g_clock.dt);
+                    glm::vec2 screen(glm::dot(line,right),glm::dot(line,up));float length=glm::length(screen);
+                    if(length>.0001f) {
+                        horizontal=(right*(-screen.y/length)+up*(screen.x/length))*std::abs(scale);
+                        if(length<2*std::abs(scale))line+=(right*screen.x+up*screen.y)*((2*std::abs(scale)-length)/length);
+                    } else line=up*(2*std::abs(scale));
+                    center+=line*.5f;vertical=line*.5f;
+                }
+                if(outDraws.empty() || outDraws.back().tex!=pt || outDraws.back().additive!=additive)
+                    outDraws.push_back({unsigned(outVerts.size()),0,pt,additive,0});
+                if(pcol[3]>outDraws.back().maxAlpha)outDraws.back().maxAlpha=pcol[3];
+                static constexpr float corners[6][2]={{-1,-1},{1,-1},{-1,1},{-1,1},{1,-1},{1,1}};
+                for(const auto& c:corners) {
+                    Vertex vx;glm::vec3 point=center+horizontal*c[0]+vertical*c[1];
+                    std::memcpy(vx.position,&point,sizeof vx.position);std::memcpy(vx.color,pcol,4);
+                    vx.uv[0]=c[0]*.5f+.5f;vx.uv[1]=1-(c[1]*.5f+.5f);
+                    outVerts.push_back(vx);
+                }
+                outDraws.back().count+=6;++emitted;
+            }
         }
     }
     void runShadowJob(WorkerScratch& sc,uint32_t idx) {
@@ -927,6 +1248,7 @@ class CaneRuntimeGraphics {
             std::abs(glm::dot(modelRot[0],modelRot[2]))<1e-3f*c0 &&
             std::abs(glm::dot(modelRot[1],modelRot[2]))<1e-3f*c0;
         sc.shadowUv.resize(nVerts);sc.shadowMask.resize(nVerts);
+        uint8_t allMask=0x1Fu;
         for(size_t v=0;v<nVerts;++v) {
             const auto& vx=rec.vertices[v];
             const glm::vec4 uv=uvMat*glm::vec4(vx.position[0],vx.position[1],vx.position[2],1);
@@ -938,7 +1260,9 @@ class CaneRuntimeGraphics {
             if(uv.y>uv.w)m|=8;
             if(uv.w<=.0001f)m|=16;
             sc.shadowMask[v]=m;
+            allMask&=m;
         }
+        if(allMask!=0)return;
         struct Point {glm::vec3 world;glm::vec4 uv;};
         auto distance=[](const Point& p,int plane) {
             switch(plane) {case 0:return p.uv.x;case 1:return p.uv.w-p.uv.x;case 2:return p.uv.y;case 3:return p.uv.w-p.uv.y;default:return p.uv.w-.0001f;}
@@ -952,7 +1276,8 @@ class CaneRuntimeGraphics {
             const auto& tri=sub.indices[t];
             const unsigned v0=tri.v1,v1=tri.v2,v2=tri.v3;
             if(v0>=nVerts || v1>=nVerts || v2>=nVerts)continue;
-            if(sc.shadowMask[v0]&sc.shadowMask[v1]&sc.shadowMask[v2])continue;
+            const uint8_t m0=sc.shadowMask[v0],m1=sc.shadowMask[v1],m2=sc.shadowMask[v2];
+            if(m0&m1&m2)continue;
             if(info.cl>.001f) {
                 const glm::vec3& n=sub.vertices[v0].normal;
                 const float d=glm::dot(n,localNegCast);
@@ -961,27 +1286,45 @@ class CaneRuntimeGraphics {
                     if(nlSq>1e-6f && d*d>=0.25f*nlSq)continue;
                 }
             }
-            Point polygon[12],temp[12];int count=3;
-            polygon[0]={worldPos(v0),sc.shadowUv[v0]};
-            polygon[1]={worldPos(v1),sc.shadowUv[v1]};
-            polygon[2]={worldPos(v2),sc.shadowUv[v2]};
-            for(int plane=0;plane<5 && count;++plane) {
-                int next=0;
-                for(int i=0;i<count;++i) {
-                    const auto& a=polygon[i];const auto& b=polygon[(i+1)%count];float da=distance(a,plane),db=distance(b,plane);
-                    if(da>=0)temp[next++]=a;
-                    if((da>=0)!=(db>=0)) {float tClip=da/(da-db);temp[next++]={glm::mix(a.world,b.world,tClip),glm::mix(a.uv,b.uv,tClip)};}
+            const glm::vec3 w0=worldPos(v0),w1=worldPos(v1),w2=worldPos(v2);
+            Point polygon[12],temp[12];
+            Point* clipped=polygon;
+            int count=3;
+            clipped[0]={w0,sc.shadowUv[v0]};
+            clipped[1]={w1,sc.shadowUv[v1]};
+            clipped[2]={w2,sc.shadowUv[v2]};
+            const uint8_t anyClip=m0|m1|m2;
+            if(anyClip!=0) {
+                Point* dst=temp;
+                for(int plane=0;plane<5 && count;++plane) {
+                    if(!(anyClip&(1u<<plane)))continue;
+                    int next=0;
+                    for(int i=0;i<count;++i) {
+                        const auto& a=clipped[i];const auto& b=clipped[(i+1)%count];float da=distance(a,plane),db=distance(b,plane);
+                        if(da>=0)dst[next++]=a;
+                        if((da>=0)!=(db>=0)) {float tClip=da/(da-db);dst[next++]={glm::mix(a.world,b.world,tClip),glm::mix(a.uv,b.uv,tClip)};}
+                    }
+                    count=next;std::swap(clipped,dst);
                 }
-                count=next;std::copy(temp,temp+count,polygon);
+                if(count<3)continue;
             }
-            if(count<3)continue;
+            const glm::vec3 centroid=(w0+w1+w2)*(1.0f/3.0f);
+            const glm::vec3 centroidToCam=info.camPos-centroid;
+            const float centroidDistSq=glm::dot(centroidToCam,centroidToCam);
+            const bool useTriangleBias=(centroidDistSq>=100.0f);
+            const glm::vec3 triBias=useTriangleBias?(centroidToCam*(.03f*fastRsqrt(centroidDistSq))):glm::vec3(0);
             Vertex polyVerts[12];
             for(int vi=0;vi<count;++vi) {
-                const auto& point=polygon[vi];
+                const auto& point=clipped[vi];
                 Vertex& vertex=polyVerts[vi];
-                const glm::vec3 towards=info.camPos-point.world;
-                const float lenSq=glm::dot(towards,towards);
-                const glm::vec3 world=point.world+(lenSq>1e-6f?towards*(.03f/std::sqrt(lenSq)):glm::vec3(0));
+                glm::vec3 world=point.world;
+                if(useTriangleBias) {
+                    world+=triBias;
+                } else {
+                    const glm::vec3 towards=info.camPos-point.world;
+                    const float lenSq=glm::dot(towards,towards);
+                    if(lenSq>1e-6f)world+=towards*(.03f*fastRsqrt(lenSq));
+                }
                 std::memcpy(vertex.position,&world,sizeof vertex.position);
                 vertex.color[0]=vertex.color[1]=vertex.color[2]=0;vertex.color[3]=info.alphaByte;
                 const float invW=1.0f/point.uv.w;
@@ -999,6 +1342,8 @@ class CaneRuntimeGraphics {
         const uint32_t total=waveTotalJobs;
         const uint32_t nCel=uint32_t(celJobs.size());
         const uint32_t nAnim=uint32_t(animJobs.size());
+        const uint32_t nHud=uint32_t(hudJobs.size());
+        const uint32_t nCaster=uint32_t(casterJobs.size());
         unsigned done=0;
         for(;;) {
             uint32_t id=__atomic_fetch_add(&waveNextJob,1u,__ATOMIC_RELAXED);
@@ -1006,7 +1351,9 @@ class CaneRuntimeGraphics {
             if(mode==WaveMode::Prep1) {
                 if(id<nCel)runCelJob(sc,id);
                 else if(id<nCel+nAnim)runAnimJob(sc,id-nCel);
-                else runHudJob(id-nCel-nAnim);
+                else if(id<nCel+nAnim+nHud)runHudJob(id-nCel-nAnim);
+                else if(id<nCel+nAnim+nHud+nCaster)runCasterJob(sc,id-nCel-nAnim-nHud);
+                else runParticleJob(id-nCel-nAnim-nHud-nCaster);
             } else if(mode==WaveMode::ShadowClip) {
                 runShadowJob(sc,id);
             }
@@ -1087,24 +1434,24 @@ class CaneRuntimeGraphics {
         if(count<=dynamicCapacity)return;
         if(count>200000)throw std::runtime_error("Native animated vertex budget exceeded");
         count=std::max(count,size_t(16384));Vertex* next[2]{};
-        C3D_FrameSync();for(auto& pointer:dynamic) {if(pointer)linearFree(pointer);pointer=nullptr;}dynamicCapacity=0;
+        C3D_FrameSync();for(auto& pointer:dynamic) {if(pointer)linearFree(pointer);pointer=nullptr;}dynamicCapacity=0;dynamicBufOffset[0]=dynamicBufOffset[1]=0;
         for(auto& pointer:next) {
             pointer=static_cast<Vertex*>(linearAlloc(count*sizeof(Vertex)));
             if(!pointer) {for(auto* memory:next)if(memory)linearFree(memory);throw std::runtime_error("Native animated buffer allocation failed");}
         }
-        for(unsigned i=0;i<2;++i)dynamic[i]=next[i];
+        for(unsigned i=0;i<2;++i) {dynamic[i]=next[i];dynamicBufOffset[i]=bufOffsetFor(dynamic[i]);}
         dynamicCapacity=count;
     }
     void reserveBatchIndices(size_t count) {
         if(count<=batchIndexCapacity)return;
         if(count>600000)throw std::runtime_error("Native batch index budget exceeded");
         count=std::max(count,size_t(131072));uint16_t* next[2]{};
-        C3D_FrameSync();for(auto& pointer:batchIndices) {if(pointer)linearFree(pointer);pointer=nullptr;}batchIndexCapacity=0;
+        C3D_FrameSync();for(auto& pointer:batchIndices) {if(pointer)linearFree(pointer);pointer=nullptr;}batchIndexCapacity=0;batchIndicesPhys[0]=batchIndicesPhys[1]=~0u;
         for(auto& pointer:next) {
             pointer=static_cast<uint16_t*>(linearAlloc(count*sizeof(uint16_t)));
             if(!pointer) {for(auto* memory:next)if(memory)linearFree(memory);throw std::runtime_error("Native batch index allocation failed");}
         }
-        for(unsigned i=0;i<2;++i)batchIndices[i]=next[i];
+        for(unsigned i=0;i<2;++i) {batchIndices[i]=next[i];batchIndicesPhys[i]=physOffsetFor(batchIndices[i]);}
         batchIndexCapacity=count;
     }
     bool allocWorldChunk(size_t vertCount,int& outChunk,unsigned& outBase) {
@@ -1121,20 +1468,82 @@ class CaneRuntimeGraphics {
         Vertex* mem=static_cast<Vertex*>(linearAlloc(bytes));
         if(!mem)return false;
         meshBytes+=bytes;
-        worldChunks.push_back({mem,unsigned(vertCount),~0u,0});
+        worldChunks.push_back({mem,unsigned(vertCount),~0u,0,bufOffsetFor(mem)});
         outChunk=int(worldChunks.size()-1);outBase=0;
         return true;
     }
-    void setTint(float r,float g,float b,float a) const {
+    bool allocLocalChunk(size_t vertCount,int& outChunk,unsigned& outBase,unsigned& outCap) {
+        if(!vertCount || vertCount>kLocalChunkVerts)return false;
+        for(size_t i=0;i<localFreeList.size();++i) {
+            auto& b=localFreeList[i];
+            if(b.cap>=vertCount && b.cap<=vertCount*2u+64u) {
+                outChunk=b.chunk;outBase=b.base;
+                if(b.cap-vertCount>=64u) {
+                    b.base+=unsigned(vertCount);b.cap-=unsigned(vertCount);outCap=unsigned(vertCount);
+                } else {
+                    outCap=b.cap;localFreeList[i]=localFreeList.back();localFreeList.pop_back();
+                }
+                return true;
+            }
+        }
+        for(size_t c=0;c<localChunks.size();++c) {
+            if(localChunks[c].used+vertCount<=kLocalChunkVerts) {
+                outChunk=int(c);outBase=localChunks[c].used;outCap=unsigned(vertCount);
+                localChunks[c].used+=unsigned(vertCount);
+                return true;
+            }
+        }
+        if(localChunks.size()>=kMaxLocalChunks)return false;
+        size_t bytes=size_t(kLocalChunkVerts)*sizeof(Vertex);
+        if(meshBytes+bytes>24*1024*1024)return false;
+        Vertex* mem=static_cast<Vertex*>(linearAlloc(bytes));
+        if(!mem)return false;
+        meshBytes+=bytes;
+        localChunks.push_back({mem,unsigned(vertCount),~0u,0,bufOffsetFor(mem)});
+        outChunk=int(localChunks.size()-1);outBase=0;outCap=unsigned(vertCount);
+        return true;
+    }
+    void freeLocalAllocation(Vertex*& verts,int& chunk,unsigned& base,unsigned& cap,size_t count,bool& owned) {
+        if(owned && verts) {linearFree(verts);meshBytes-=count*sizeof(Vertex);}
+        else if(chunk>=0 && cap>0) {localFreeList.push_back({chunk,base,cap});}
+        verts=nullptr;chunk=-1;base=0;cap=0;owned=false;
+    }
+    uint16_t getBatchKey(int chunkIdx,uint8_t texMode,C3D_Tex* t0,C3D_Tex* t1,C3D_Tex* t2) {
+        const BatchKeyDesc desc{chunkIdx,texMode,t0,t1,t2};
+        if(uint16_t* found=batchKeyMap.find(desc))return *found;
+        if(batchKeyTable.size()>=0xFFFEu)return 0xFFFFu;
+        const uint16_t key=uint16_t(batchKeyTable.size());
+        batchKeyTable.push_back(desc);
+        batchKeyMap[desc]=key;
+        bucketHead.push_back(~0u);
+        return key;
+    }
+    void setTint(float r,float g,float b,float a) {
+        if(tintValid && r==lastTintR && g==lastTintG && b==lastTintB && a==lastTintA)return;
+        tintValid=true;lastTintR=r;lastTintG=g;lastTintB=b;lastTintA=a;
         constexpr float k=1.0f/255.0f;
-        C3D_FVUnifSet(GPU_VERTEX_SHADER,tint,r*k,g*k,b*k,a*k);
+        if(inFrameCmd && gpuCmdBuf && tint>=0) {
+            const C3D_FVec v=FVec4_New(r*k,g*k,b*k,a*k);
+            GPUCMD_AddWrite(GPUREG_VSH_FLOATUNIFORM_CONFIG,0x80000000u|u32(tint));
+            GPUCMD_AddWrites(GPUREG_VSH_FLOATUNIFORM_DATA,reinterpret_cast<const u32*>(&v),4);
+            C3D_FVUnifDirty[GPU_VERTEX_SHADER][tint]=false;
+        } else {
+            C3D_FVUnifSet(GPU_VERTEX_SHADER,tint,r*k,g*k,b*k,a*k);
+        }
     }
     void setStereo(float z=0,float w=0,float limit=0) {
         C3D_FVUnifSet(GPU_VERTEX_SHADER,stereo,z,w,limit,0);
     }
+    void bindProgram(shaderProgram_s* p) {
+        if(boundProgram!=p) {C3D_BindProgram(p);boundProgram=p;}
+    }
+    void bindSceneProgram(bool use3Tex,bool useStereo) {
+        sceneUseStereo=useStereo;
+        shaderProgram_s* p=use3Tex?(useStereo?&program:&movieProgram):(useStereo?&stereo1Program:&flat1Program);
+        bindProgram(p);
+    }
     void bindGameplayProgram() {
-        // Native/wide 2D keeps the original GPU program.
-        C3D_BindProgram(displayMode==2 || displayMode==6 || postTarget?&program:&movieProgram);
+        bindSceneProgram(false,false);
     }
     void unlitState() {
         setStereo();
@@ -1142,7 +1551,7 @@ class CaneRuntimeGraphics {
         if(filterOffsetNegative>=0)C3D_FVUnifSet(GPU_VERTEX_SHADER,filterOffsetNegative,0,0,0,0);
         // UI and movies must not inherit the world's extra alpha sampler,
         // material coefficients, stencil masks or additive blend operation.
-        bindGameplayProgram();
+        bindSceneProgram(false,false);
         C3D_TexBind(1,&white);C3D_TexBind(2,&white);
         for(int stage=0;stage<6;++stage)C3D_TexEnvInit(C3D_GetTexEnv(stage));
         auto* env=C3D_GetTexEnv(0);
@@ -1241,12 +1650,12 @@ public:
         for(auto& item:textures) {
             if(vramTextureBytes<=targetBudget)return true;
             if(!item.loaded || !item.inVram)continue;
+            const size_t bytes=C3D_TexCalcTotalSize(item.tex.size,item.tex.maxLevel);
             C3D_Tex replacement=item.tex;
-            replacement.data=linearAlloc(item.tex.size);
+            replacement.data=linearAlloc(bytes);
             if(!replacement.data)return false;
-            std::memcpy(replacement.data,item.tex.data,item.tex.size);
-            GSPGPU_FlushDataCache(replacement.data,item.tex.size);
-            const size_t bytes=item.tex.size;
+            std::memcpy(replacement.data,item.tex.data,bytes);
+            GSPGPU_FlushDataCache(replacement.data,bytes);
             C3D_TexDelete(&item.tex);item.tex=replacement;item.inVram=false;
             --vramTexCount;++fcramTexCount;vramTextureBytes-=bytes;fcramTextureBytes+=bytes;
         }
@@ -1320,10 +1729,11 @@ public:
         if(!C3D_Init(0x200000))throw std::runtime_error("Citro3D initialization failed");started=true;
         postQuad=static_cast<Vertex*>(linearAlloc(sizeof(Vertex)*6));
         if(!postQuad)throw std::runtime_error("Post-process quad allocation failed");
+        postQuadBufOffset=bufOffsetFor(postQuad);
         shader=DVLB_ParseFile((u32*)cane_shader,cane_shader_end-cane_shader);
         if(!shader||!shader->numDVLE)throw std::runtime_error("Native shader unavailable");
         shaderProgramInit(&program);programStarted=true;shaderProgramSetVsh(&program,&shader->DVLE[0]);
-        C3D_BindProgram(&program);projection=shaderInstanceGetUniformLocation(program.vertexShader,"projection");
+        bindProgram(&program);projection=shaderInstanceGetUniformLocation(program.vertexShader,"projection");
         movieShader=DVLB_ParseFile((u32*)cane_movie_shader,cane_movie_shader_end-cane_movie_shader);
         if(!movieShader || !movieShader->numDVLE)throw std::runtime_error("Original 2D movie shader unavailable");
         shaderProgramInit(&movieProgram);movieProgramStarted=true;
@@ -1334,6 +1744,21 @@ public:
         if(projection!=movieProjection || tint!=movieTint)
             throw std::runtime_error("2D/stereo shader uniform layouts differ");
         stereo=shaderInstanceGetUniformLocation(program.vertexShader,"stereo");
+        stereo1Shader=DVLB_ParseFile((u32*)cane_stereo1_shader,cane_stereo1_shader_end-cane_stereo1_shader);
+        if(!stereo1Shader || !stereo1Shader->numDVLE)throw std::runtime_error("Native 1-tex stereo shader unavailable");
+        shaderProgramInit(&stereo1Program);stereo1ProgramStarted=true;
+        shaderProgramSetVsh(&stereo1Program,&stereo1Shader->DVLE[0]);
+        if(shaderInstanceGetUniformLocation(stereo1Program.vertexShader,"projection")!=projection ||
+           shaderInstanceGetUniformLocation(stereo1Program.vertexShader,"tint")!=tint ||
+           shaderInstanceGetUniformLocation(stereo1Program.vertexShader,"stereo")!=stereo)
+            throw std::runtime_error("1-tex/3-tex stereo shader uniform layouts differ");
+        flat1Shader=DVLB_ParseFile((u32*)cane_flat1_shader,cane_flat1_shader_end-cane_flat1_shader);
+        if(!flat1Shader || !flat1Shader->numDVLE)throw std::runtime_error("Native 1-tex flat shader unavailable");
+        shaderProgramInit(&flat1Program);flat1ProgramStarted=true;
+        shaderProgramSetVsh(&flat1Program,&flat1Shader->DVLE[0]);
+        if(shaderInstanceGetUniformLocation(flat1Program.vertexShader,"projection")!=projection ||
+           shaderInstanceGetUniformLocation(flat1Program.vertexShader,"tint")!=tint)
+            throw std::runtime_error("1-tex flat shader uniform layouts differ");
         filterOffset=shaderInstanceGetUniformLocation(program.vertexShader,"filterOffset");
         filterOffsetNegative=shaderInstanceGetUniformLocation(program.vertexShader,"filterOffsetNegative");setStereo();
         applyGameplayDisplay(CaneDisplayMode3ds());
@@ -1396,12 +1821,13 @@ public:
     void drawMovieQuad(C3D_RenderTarget* drawTarget,bool isWideTarget,float displayW,const Vertex* vertices,C3D_Tex* tex,bool syncDraw=true) {
         C3D_Mtx ortho;Mtx_OrthoTilt(&ortho,0,displayW,240,0,0,1,true);ortho.r[2]=FVec4_New(0,0,0,-.5f);
         C3D_FrameBegin(syncDraw?C3D_FRAME_SYNCDRAW:0);C3D_RenderTargetClear(drawTarget,isWideTarget?C3D_CLEAR_COLOR:C3D_CLEAR_ALL,0x000000ff,0);C3D_FrameDrawOn(drawTarget);
+        tintValid=false;
         unlitState();
         // Movies retain the exact pre-stereo shader: no 3D branch, disparity
         // uniforms or post-process sample offsets enter their GPU pipeline.
-        C3D_BindProgram(&movieProgram);
+        bindProgram(&movieProgram);
         C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER,movieProjection,&ortho);
-        C3D_FVUnifSet(GPU_VERTEX_SHADER,movieTint,1,1,1,1);
+        setTint(255,255,255,255);
         C3D_DepthTest(false,GPU_ALWAYS,GPU_WRITE_COLOR);
         auto* buf=C3D_GetBufInfo();BufInfo_Init(buf);BufInfo_Add(buf,vertices,sizeof(Vertex),3,0x210);
         C3D_TexBind(0,tex);C3D_DrawArrays(GPU_TRIANGLES,0,6);C3D_FrameEnd(0);
@@ -1617,14 +2043,16 @@ public:
         for(int i=0;i<RP_Max;++i) {phaseBuckets[i].clear();staticBatches[i].clear();mergedDraws[i].clear();}
         tvDraws.clear();fadedWorldDraws.clear();shadowReceivers.clear();
         for(auto& cv:casterDynVerts)cv.clear();
-        shadowPasses.clear();casterSubs.clear();particleDraws.clear();hudDraws.clear();outlineLines.clear();
+        shadowPasses.clear();casterSubs.clear();particleDraws.clear();hudDraws.clear();
         canePackets.clear();caneParticles.clear();caneCasters.clear();caneCelPackets.clear();caneTvContext=nullptr;
-        caneHud.clear();SetupCm(g_pcm);
+        CaneRecycleHudBuffers();SetupCm(g_pcm);
         if(caneBottomActive)CaneBottomBackgroundNative();
         frameLights.clear();
-        for(LIGHT* light=g_psw->dlLight.plightFirst;light && frameLights.size()<MAX_LIGHTS;light=light->dleLight.plightNext) {
+        caneDynamicLights.clear();
+        for(LIGHT* light=g_psw->dlLight.plightFirst;light;light=light->dleLight.plightNext) {
             if(!FIsLoInWorld(light))continue;
-            frameLights.push_back(makePreLight(light));
+            if(frameLights.size()<MAX_LIGHTS)frameLights.push_back(makePreLight(light));
+            if(light->fDynamic)caneDynamicLights.push_back(light);
         }
         if(frame<=2)std::fprintf(stderr,"frame %u: render world\n",frame);
         if(frame<=2)std::fprintf(stderr,"heap used=%d free=%d\n",mallinfo().uordblks,mallinfo().fordblks);
@@ -1676,8 +2104,26 @@ public:
         Mtx_LookAt(&view,FVec3_New(eye.x,eye.y,eye.z),FVec3_New(eye.x+forward.x,eye.y+forward.y,eye.z+forward.z),FVec3_New(cameraUp.x,cameraUp.y,cameraUp.z),false);
         Mtx_PerspTilt(&projectionMatrix,std::clamp(g_pcm->radFOV,.02f,2.9f),C3D_AspectRatioTop,std::max(.01f,g_pcm->sNearClip),std::max(g_pcm->sNearClip+1.0f,g_pcm->sFarClip),false);
         Mtx_Multiply(&combined,&projectionMatrix,&view);
+        C3D_Mtx skyCombined=combined;
+        for(int c=0;c<4;++c)skyCombined.r[2].c[c]=combined.r[3].c[c]*-5e-7f;
         glm::mat4 worldToClip;
         for(unsigned row=0;row<4;++row)for(unsigned col=0;col<4;++col)worldToClip[col][row]=combined.r[row].c[3-col];
+        const float projRowX=glm::length(glm::vec3(worldToClip[0][0],worldToClip[1][0],worldToClip[2][0]))*200.f;
+        const float projRowY=glm::length(glm::vec3(worldToClip[0][1],worldToClip[1][1],worldToClip[2][1]))*120.f;
+        const float projPixelScale=std::max(projRowX,projRowY);
+        auto estimateScreenPx=[&](const glm::mat4& model,const glm::vec3& localCenter,float radius)->float {
+            if(!(std::isfinite(radius) && radius>0.0f))return 9999.0f;
+            const glm::vec3 wc=transformPoint(model,localCenter);
+            const float clipW=worldToClip[0][3]*wc.x+worldToClip[1][3]*wc.y+worldToClip[2][3]*wc.z+worldToClip[3][3];
+            if(!(std::isfinite(clipW) && clipW>radius))return 9999.0f;
+            return 2.0f*radius*projPixelScale/(clipW-radius);
+        };
+        auto estimateScreenPxWorld=[&](const glm::vec3& wc,float radius)->float {
+            if(!(std::isfinite(radius) && radius>0.0f))return 9999.0f;
+            const float clipW=worldToClip[0][3]*wc.x+worldToClip[1][3]*wc.y+worldToClip[2][3]*wc.z+worldToClip[3][3];
+            if(!(std::isfinite(clipW) && clipW>radius))return 9999.0f;
+            return 2.0f*radius*projPixelScale/(clipW-radius);
+        };
         // Upload visible UI atlases at their original size before a world
         // material can install a reduced-resolution copy under the same ID.
         for(const auto& hud:caneHud) {
@@ -1691,11 +2137,8 @@ public:
         if(frame<=2)std::fprintf(stderr,"frame %u: build meshes\n",frame);
         packetCount=canePackets.size();triangleCount=0;
         for(unsigned i=0;i<workerCount;++i) {workers[i].jobsDone=0;workers[i].busyTicks=0;}
-        size_t casterVertTotal=0;
         for(const auto& caster:caneCasters) {
             RebuildShadow(caster.owner->pshadowGen);
-            for(const auto& glob:caster.owner->globset.aglob)
-                for(const auto& sub:glob.asubglob)casterVertTotal+=sub.vertices.size();
         }
         celJobs.clear();
         size_t celEdgeCap=0;
@@ -1713,12 +2156,10 @@ public:
                 const float scale=std::max({glm::length(model[0]),glm::length(model[1]),glm::length(model[2])});
                 const float radius=glob.sRadius*scale;
                 const glm::vec4 center=mvp*glm::vec4(glob.posCenter,1);
-                const float rowX=glm::length(glm::vec3(worldToClip[0][0],worldToClip[1][0],worldToClip[2][0]))*200.f;
-                const float rowY=glm::length(glm::vec3(worldToClip[0][1],worldToClip[1][1],worldToClip[2][1]))*120.f;
                 if(std::isfinite(radius) && radius>0 && std::isfinite(center.w) && center.w>radius) {
-                    const float pixels=2.f*radius*std::max(rowX,rowY)/(center.w-radius);
-                    if(pixels<12.f) {++outlineLodSkipped;continue;}
-                    if(pixels<48.f) {minLinePixels=.75f;++outlineLodReduced;}
+                    const float pixels=2.f*radius*projPixelScale/(center.w-radius);
+                    if(pixels<20.f) {++outlineLodSkipped;continue;}
+                    if(pixels<64.f) {minLinePixels=1.25f;++outlineLodReduced;}
                 }
             }
             uint32_t* celSlot=celCacheMap.find(packet.pglob);
@@ -1746,23 +2187,32 @@ public:
             celJobs.push_back({&packet,&cache,mvp,color,minLinePixels});
             celEdgeCap+=glob.edgePoints.size()/4;
         }
-        if(celJobOut.size()<celJobs.size())celJobOut.resize(celJobs.size());
+        if(celJobVerts.size()<celJobs.size())celJobVerts.resize(celJobs.size());
         animJobs.clear();allBoneNormMats.clear();
         hudDraws.clear();hudDraws.reserve(caneHud.size());hudJobs.clear();
-        size_t wave1Used=0;
+        casterJobs.clear();particleJobs.clear();
+        liveDecisions.clear();ownedLiveFlush.clear();
+        size_t wave1Used=4;
         packetGcIdx.assign(canePackets.size(),~0u);
+        uint8_t casterHasPacket[4]{};
+        unsigned liveLightSkipped=0;
         for(size_t pi=0;pi<canePackets.size();++pi) {
             const auto& packet=canePackets[pi];
             const auto& glob=*packet.pglob;const auto& asubs=glob.asubglob;
             if(asubs.empty())continue;
+            for(size_t m=0;m<caneCasters.size();++m) {
+                if(static_cast<const ALO*>(caneCasters[m].owner)==packet.palo) {casterHasPacket[m]=1;break;}
+            }
+            const bool activePose=hasActivePose(packet);
             float cachedScale=-1.0f;
+            int packetForceOneTex=-1;
             uint32_t packetBoneOff=0,packetBoneCount=0;bool packetBonesBuilt=false;
             bool anyStaticSub=false;
             for(size_t si=0;si<asubs.size();++si) {
                 const auto& sub=asubs[si];
                 size_t vertCount=sub.vertices.size(),idxCount=sub.indices.size()*3;
                 if(!vertCount || !idxCount)continue;
-                if(!animated(packet,sub)) {anyStaticSub=true;continue;}
+                if(!animated(packet,sub,activePose)) {anyStaticSub=true;continue;}
                 if(cachedScale<0.0f) {
                     const glm::mat3 r(packet.model);
                     cachedScale=std::max({glm::length(r[0]),glm::length(r[1]),glm::length(r[2])});
@@ -1770,6 +2220,77 @@ public:
                 const auto& set=packet.palo->globset;
                 const bool hasSkin=sub.cibnd>0 && set.cbnd>0 && !set.boneMatrices.empty();
                 const bool doLight=sub.pshd && sub.pshd->shdk==SHDK_ThreeWay;
+                bool subForceOneTex=false;
+                if(doLight && !sub.pshd->atex.empty()) {
+                    if(packetForceOneTex<0) {
+                        if(!packet.tv && packet.palo!=g_pjt && g_ui.uis==UIS_Playing) {
+                            packetForceOneTex=(estimateScreenPx(packet.model,glob.posCenter,glob.sRadius*cachedScale)<48.0f)?1:0;
+                        } else {
+                            packetForceOneTex=0;
+                        }
+                    }
+                    subForceOneTex=(packetForceOneTex>0);
+                }
+                if(isLiveLightOnly(packet,sub,activePose)) {
+                    const LiveKey lk{&sub,packet.palo};
+                    LiveEntry& le=liveLightCache[lk];
+                    if(le.seenThisFrame==frame) {
+                        liveDecisions.push_back({uint32_t(pi),uint32_t(si),false,false});
+                    } else {
+                        le.seenThisFrame=frame;le.usedFrame=frame;
+                        if(!le.verts[0] || !le.verts[1] || le.source!=sub.vertices.data() || le.count!=vertCount || le.vao!=glob.VAO) {
+                            if(le.verts[0] || le.verts[1])C3D_FrameSync();
+                            freeLocalAllocation(le.verts[0],le.chunk[0],le.base[0],le.cap[0],le.count,le.owned[0]);
+                            freeLocalAllocation(le.verts[1],le.chunk[1],le.base[1],le.cap[1],le.count,le.owned[1]);
+                            le.lastRelightFrame=0;
+                            bool ok=true;
+                            for(int b=0;b<2 && ok;++b) {
+                                int lc=-1;unsigned lb=0,lcap=0;
+                                if(allocLocalChunk(vertCount,lc,lb,lcap)) {
+                                    le.chunk[b]=lc;le.base[b]=lb;le.cap[b]=lcap;le.owned[b]=false;
+                                    le.verts[b]=localChunks[lc].vertices+lb;
+                                    le.bufOffset[b]=localChunks[lc].bufOffset+u32(lb*sizeof(Vertex));
+                                } else {
+                                    size_t bytes=vertCount*sizeof(Vertex);
+                                    if(meshBytes+bytes<=24u*1024u*1024u) {
+                                        if(Vertex* mem=static_cast<Vertex*>(linearAlloc(bytes))) {
+                                            meshBytes+=bytes;
+                                            le.verts[b]=mem;le.bufOffset[b]=bufOffsetFor(mem);
+                                            le.chunk[b]=-1;le.base[b]=0;le.cap[b]=0;le.owned[b]=true;
+                                        } else ok=false;
+                                    } else ok=false;
+                                }
+                            }
+                            if(ok) {
+                                le.source=sub.vertices.data();le.count=vertCount;le.vao=glob.VAO;
+                            } else {
+                                freeLocalAllocation(le.verts[0],le.chunk[0],le.base[0],le.cap[0],vertCount,le.owned[0]);
+                                freeLocalAllocation(le.verts[1],le.chunk[1],le.base[1],le.cap[1],vertCount,le.owned[1]);
+                                le.source=nullptr;le.count=0;
+                            }
+                        }
+                        if(le.verts[0] && le.verts[1]) {
+                            const bool moved=(le.lastRelightFrame==0) || std::memcmp(&le.model,&packet.model,sizeof(glm::mat4))!=0;
+                            const bool parityHit=(((uintptr_t(&sub)>>4)&1u)==(frame&1u));
+                            const bool needRelight=moved || (frame-le.lastRelightFrame>=2u) || parityHit;
+                            liveDecisions.push_back({uint32_t(pi),uint32_t(si),true,needRelight});
+                            if(needRelight) {
+                                const uint8_t writeSlot=le.curSlot^1u;
+                                animJobs.push_back({uint32_t(pi),uint32_t(si),0,0,0,cachedScale,0,false,subForceOneTex,-1,-1,-1,le.verts[writeSlot],lk,writeSlot});
+                                le.model=packet.model;le.curSlot=writeSlot;le.lastRelightFrame=frame;
+                                if(le.chunk[writeSlot]>=0) {
+                                    auto& lc=localChunks[le.chunk[writeSlot]];
+                                    lc.dirtyMin=std::min(lc.dirtyMin,le.base[writeSlot]);
+                                    lc.dirtyMax=std::max(lc.dirtyMax,le.base[writeSlot]+unsigned(vertCount));
+                                } else {
+                                    ownedLiveFlush.push_back({le.verts[writeSlot],vertCount*sizeof(Vertex)});
+                                }
+                            }
+                            continue;
+                        }
+                        liveDecisions.push_back({uint32_t(pi),uint32_t(si),false,false});
+                    }
+                }
                 uint32_t bOff=0,bCnt=0;
                 if(hasSkin && doLight) {
                     if(!packetBonesBuilt) {
@@ -1784,7 +2305,7 @@ public:
                     bOff=packetBoneOff;bCnt=packetBoneCount;
                 }
                 wave1Used=(wave1Used+3u)&~3u;
-                animJobs.push_back({uint32_t(pi),uint32_t(si),uint32_t(wave1Used),bOff,bCnt,cachedScale,0,false,-1,-1,-1});
+                animJobs.push_back({uint32_t(pi),uint32_t(si),uint32_t(wave1Used),bOff,bCnt,cachedScale,0,false,subForceOneTex,-1,-1,-1,nullptr,{},0});
                 wave1Used+=vertCount;
             }
             if(anyStaticSub) {
@@ -1803,6 +2324,53 @@ public:
                 else gc.seenFrame=frame;
             }
         }
+        glm::mat4 uvToClip(0);uvToClip[0][0]=2;uvToClip[1][1]=2;uvToClip[3]=glm::vec4(-1,-1,-.5f,1);
+        glm::mat4 casterProj[4]{};
+        float casterAlpha[4]{};
+        uint64_t casterPoseHash[4]{};
+        bool casterNeedRender[4]{};
+        unsigned shadowMapsSkipped=0;
+        for(size_t m=0;m<caneCasters.size();++m) {
+            const auto& caster=caneCasters[m];SHADOW* shadow=caster.owner->pshadowGen;
+            const auto& map=shadowMaps[m];
+            casterProj[m]=uvToClip*shadow->matWorldToUv*caster.model;
+            casterAlpha[m]=std::clamp(caster.alpha,0.0f,1.0f);
+            casterPoseHash[m]=hashCasterState(caster.owner);
+            bool need=true;
+            if(map.valid && map.target && map.lastOwner==caster.owner && std::abs(map.lastAlpha-casterAlpha[m])<1e-4f) {
+                if(std::memcmp(&map.lastProjection,&casterProj[m],sizeof(glm::mat4))==0 && casterPoseHash[m]==map.lastPoseHash) {
+                    need=false;
+                } else if(static_cast<const ALO*>(caster.owner)!=g_pjt &&
+                          (frame-map.lastUpdateFrame)<2u &&
+                          glm::distance2(g_pcm->pos,glm::vec3(caster.model[3]))>1440000.0f &&
+                          std::abs(casterProj[m][3][0]-map.lastProjection[3][0])<0.25f &&
+                          std::abs(casterProj[m][3][1]-map.lastProjection[3][1])<0.25f) {
+                    need=false;
+                }
+            }
+            casterNeedRender[m]=need;
+            if(!need)++shadowMapsSkipped;
+        }
+        size_t casterFallbackVertTotal=0;
+        for(size_t m=0;m<caneCasters.size();++m) {
+            if(!casterNeedRender[m])continue;
+            const auto& caster=caneCasters[m];
+            const glm::mat3 casterRot(caster.model);
+            const float casterMaxScale=std::max({glm::length(casterRot[0]),glm::length(casterRot[1]),glm::length(casterRot[2])});
+            for(auto& glob:caster.owner->globset.aglob) {
+                for(auto& sub:glob.asubglob) {
+                    const size_t vertCount=sub.vertices.size(),idxCount=sub.indices.size()*3;
+                    if(!vertCount || !idxCount)continue;
+                    if(!casterHasPacket[m]) {
+                        wave1Used=(wave1Used+3u)&~3u;
+                        casterJobs.push_back({uint32_t(m),&glob,&sub,uint32_t(wave1Used),casterMaxScale});
+                        wave1Used+=vertCount;
+                    } else {
+                        casterFallbackVertTotal+=vertCount;
+                    }
+                }
+            }
+        }
         for(const auto& hud:caneHud) {
             C3D_Tex* ht=texture(imageForGlTex(hud.texture),true);
             wave1Used=(wave1Used+3u)&~3u;
@@ -1812,13 +2380,41 @@ public:
             wave1Used+=hud.vertices.size();
         }
         size_t used=(wave1Used+3u)&~3u,totalBatchIndices=0;
-        size_t particleBudget=0;
-        for(const auto& p:caneParticles) {unsigned links=0;for(BLIP* b=p.group->dlBlip.pblipFirst;b && links++<1024;b=b->dle.pblipNext)particleBudget+=std::clamp(b->cblipe,0,44);}
-        size_t required=used+std::min(particleBudget,size_t(8192))*6+casterVertTotal+(caneCasters.empty()?0:12288)+std::min(celEdgeCap,size_t(outlineBudget))*6+12;
+        frameCamRight=glm::normalize(glm::vec3(g_pcm->mat[1]));
+        frameCamUp=glm::normalize(glm::vec3(g_pcm->mat[2]));
+        size_t particleBudget=0,particleRemain=8192;
+        for(size_t pj=0;pj<caneParticles.size();++pj) {
+            const auto& p=caneParticles[pj];
+            const auto& group=*p.group;
+            if(!group.pshd || group.pshd->atex.empty())continue;
+            const auto& tex=group.pshd->atex[0];
+            const auto& images=group.pshd->shdk==SHDK_ThreeWay?tex.ambientImageIndex:tex.diffuseImageIndex;
+            const int table=std::clamp(group.cqwTexture,0,32);
+            if(!table || images.empty())continue;
+            size_t groupBudget=0;
+            unsigned links=0;
+            for(BLIP* b=group.dlBlip.pblipFirst;b && links++<1024;b=b->dle.pblipNext)
+                groupBudget+=std::clamp(b->cblipe,0,44);
+            if(!groupBudget)continue;
+            ParticleJob pjob{};
+            pjob.packetIdx=uint32_t(pj);
+            pjob.maxBlips=uint32_t(std::min(groupBudget,particleRemain));
+            if(particleRemain>pjob.maxBlips)particleRemain-=pjob.maxBlips;
+            else particleRemain=0;
+            for(int entry=0;entry<table;++entry) {
+                const int imageFrame=group.aiframeTexture[entry];
+                pjob.tableTex[entry]=(imageFrame>=0 && size_t(imageFrame)<images.size())?texture(images[imageFrame],false,true):nullptr;
+            }
+            particleBudget+=groupBudget;
+            particleJobs.push_back(pjob);
+        }
+        if(particleJobVerts.size()<particleJobs.size())particleJobVerts.resize(particleJobs.size());
+        if(particleJobDraws.size()<particleJobs.size())particleJobDraws.resize(particleJobs.size());
+        size_t required=used+std::min(particleBudget,size_t(8192))*6+casterFallbackVertTotal+(caneCasters.empty()?0:12288)+std::min(celEdgeCap,size_t(outlineBudget))*6+12;
         reserveDynamic(required);
         pk[3]=svcGetSystemTick();
-        WaveGuard guard1{this,kickWave(WaveMode::Prep1,uint32_t(celJobs.size()+animJobs.size()+hudJobs.size()))};
-        size_t animCursor=0;
+        WaveGuard guard1{this,kickWave(WaveMode::Prep1,uint32_t(celJobs.size()+animJobs.size()+hudJobs.size()+casterJobs.size()+particleJobs.size()))};
+        size_t animCursor=0,liveDecCursor=0;
         animDrawSlots.clear();animDrawSlots.reserve(animJobs.size());
         unsigned animFlattens=0,movedFlattens=0,newFlattens=0,totalDraws=0,threeWayCount=0;tkAnim=tkMoved=0;
         for(size_t pi=0;pi<canePackets.size();++pi) {
@@ -1863,7 +2459,11 @@ public:
                 const bool reusedThisFrame=(gc.used==frame);
                 if(gc.vao!=glob.VAO || gc.subs.size()!=asubs.size()) {
                     const bool wasInstanced=gc.instanced;
-                    for(auto& sc:gc.subs)if(sc.localVerts) {C3D_FrameSync();linearFree(sc.localVerts);meshBytes-=sc.count*sizeof(Vertex);}
+                    bool synced=false;
+                    for(auto& sc:gc.subs)if(sc.localVerts) {
+                        if(!synced) {C3D_FrameSync();synced=true;}
+                        freeLocalAllocation(sc.localVerts,sc.localChunk,sc.localBase,sc.localCap,sc.count,sc.localOwned);
+                    }
                     gc=GlobCache{};gc.vao=glob.VAO;gc.model=packet.model;gc.flipped=isFlipped();gc.subs.resize(asubs.size());
                     gc.seenFrame=frame;gc.instanced=wasInstanced;gc.moved=wasInstanced;
                 } else if(!reusedThisFrame) {
@@ -1874,14 +2474,18 @@ public:
                     }
                     if(badSource) {
                         const bool wasInstanced=gc.instanced;
-                        for(auto& sc:gc.subs)if(sc.localVerts) {C3D_FrameSync();linearFree(sc.localVerts);meshBytes-=sc.count*sizeof(Vertex);}
+                        bool synced=false;
+                        for(auto& sc:gc.subs)if(sc.localVerts) {
+                            if(!synced) {C3D_FrameSync();synced=true;}
+                            freeLocalAllocation(sc.localVerts,sc.localChunk,sc.localBase,sc.localCap,sc.count,sc.localOwned);
+                        }
                         gc=GlobCache{};gc.vao=glob.VAO;gc.model=packet.model;gc.flipped=isFlipped();gc.subs.resize(asubs.size());
                         gc.seenFrame=frame;gc.instanced=wasInstanced;gc.moved=wasInstanced;
                     } else if(gc.anyWorldBaked && (gc.instanced || std::memcmp(&gc.model,&packet.model,sizeof(glm::mat4))!=0)) {
                         gc.anyWorldBaked=false;gc.moved=true;gc.flipped=isFlipped();gc.model=packet.model;
                         for(auto& sc:gc.subs) {
                             sc.worldChunk=-1;sc.worldBase=0;std::vector<uint16_t>().swap(sc.worldIndices);
-                            sc.localIndices=nullptr;sc.localIndexCount=0;sc.texValid=false;sc.tex0=nullptr;
+                            sc.localIndices=nullptr;sc.localIndexCount=0;sc.localIdxPhysOffset=~0u;sc.batchKey=0xFFFFu;sc.texValid=false;sc.tex0=nullptr;
                         }
                     } else if(!gc.anyWorldBaked && std::memcmp(&gc.model,&packet.model,sizeof(glm::mat4))!=0) {
                         gc.flipped=isFlipped();needStaticMoveCheck=true;
@@ -1898,6 +2502,7 @@ public:
                 }
                 gc.used=frame;
             }
+            const bool activePose=hasActivePose(packet);
             for(size_t si=0;si<asubs.size();++si) {
                 auto& sub=asubs[si];
                 size_t vertCount=sub.vertices.size(),idxCount=sub.indices.size()*3;if(!vertCount || !idxCount)continue;
@@ -1908,28 +2513,63 @@ public:
                 C3D_Tex* t0=nullptr,*t1=nullptr,*t2=nullptr;
                 uint8_t texMode=0;
                 bool subWorldBaked=false;
-                if(animated(packet,sub)) {
-                    Vertex* dyn=dynamic[slot]+animJobs[animCursor].dynOffset;
-                    ++animCursor;
-                    ++animFlattens;
-                    vertices=dyn;
-                    if(packetCasterIdx>=0)casterDynVerts[packetCasterIdx].push_back({&sub,dyn});
+                if(animated(packet,sub,activePose)) {
+                    LiveDecision ld{};
+                    if(isLiveLightOnly(packet,sub,activePose) &&
+                       liveDecCursor<liveDecisions.size() &&
+                       liveDecisions[liveDecCursor].packetIdx==pi &&
+                       liveDecisions[liveDecCursor].subIdx==si) {
+                        ld=liveDecisions[liveDecCursor++];
+                    }
                     const auto& ib=indexBufferFor(sub,glob.VAO);
-                    Draw d{vertices,ib.data,ib.count,nullptr,nullptr,nullptr,0,false,isFlipped(),false,&packet,packet.rp,packet.z,sub.pshd,&sub};
-                    if(packet.tv) {
-                        animDrawSlots.push_back({uint32_t(tvDraws.size()),0,true});
-                        tvDraws.push_back(d);
+                    if(ld.active) {
+                        const LiveEntry& le=liveLightCache[{&sub,packet.palo}];
+                        vertices=le.verts[le.curSlot];
+                        const u32 liveBufOff=le.bufOffset[le.curSlot];
+                        if(packetCasterIdx>=0 && casterNeedRender[packetCasterIdx])casterDynVerts[packetCasterIdx].push_back({&sub,vertices,liveBufOff});
+                        Draw d{vertices,liveBufOff,ib.data,ib.count,nullptr,nullptr,nullptr,0,false,isFlipped(),false,&packet,packet.rp,packet.z,sub.pshd,&sub,uint32_t(pi),std::clamp(packet.darken,0.0f,1.0f),std::clamp(packet.alpha,0.0f,1.0f),DrawKind::StandardAlpha,ib.physOffset};
+                        if(ld.relit) {
+                            ++animCursor;++animFlattens;
+                            uint8_t b=uint8_t(std::min(unsigned(packet.rp),unsigned(RP_Max-1)));
+                            animDrawSlots.push_back({uint32_t(phaseBuckets[b].size()),b,false});
+                            phaseBuckets[b].push_back(d);
+                        } else {
+                            ++liveLightSkipped;
+                            int i0=le.i0,i1=le.i1,i2=le.i2;
+                            if(sub.uvSai) {
+                                if(isSubThreeWay)resolveThreeWayImages(sub,imageFor(sub),i0,i1,i2);
+                                else i0=imageFor(sub);
+                            }
+                            d.texMode=le.texMode;d.hasSoftAlpha=le.hasSoftAlpha;
+                            if(le.texMode==0) {d.tex0=texture(i0);}
+                            else if(le.texMode==1) {d.tex1=texture(i1);d.tex0=(i0==i1?d.tex1:texture(i0,false,false,64));}
+                            else {d.tex1=texture(i1);d.tex0=(i0==i1?d.tex1:texture(i0,false,false,64));d.tex2=(i2==i1?d.tex1:(i2==i0?d.tex0:texture(i2,false,false,64)));}
+                            phaseBuckets[std::min(unsigned(packet.rp),unsigned(RP_Max-1))].push_back(d);
+                        }
                     } else {
-                        uint8_t b=uint8_t(std::min(unsigned(packet.rp),unsigned(RP_Max-1)));
-                        animDrawSlots.push_back({uint32_t(phaseBuckets[b].size()),b,false});
-                        phaseBuckets[b].push_back(d);
+                        const uint32_t dynOff=animJobs[animCursor].dynOffset;
+                        const u32 dynBufOff=dynamicBufOffset[slot]+u32(dynOff*sizeof(Vertex));
+                        Vertex* dyn=dynamic[slot]+dynOff;
+                        ++animCursor;
+                        ++animFlattens;
+                        vertices=dyn;
+                        if(packetCasterIdx>=0 && casterNeedRender[packetCasterIdx])casterDynVerts[packetCasterIdx].push_back({&sub,dyn,dynBufOff});
+                        Draw d{vertices,dynBufOff,ib.data,ib.count,nullptr,nullptr,nullptr,0,false,isFlipped(),false,&packet,packet.rp,packet.z,sub.pshd,&sub,uint32_t(pi),std::clamp(packet.darken,0.0f,1.0f),std::clamp(packet.alpha,0.0f,1.0f),DrawKind::StandardAlpha,ib.physOffset};
+                        if(packet.tv) {
+                            animDrawSlots.push_back({uint32_t(tvDraws.size()),0,true});
+                            tvDraws.push_back(d);
+                        } else {
+                            uint8_t b=uint8_t(std::min(unsigned(packet.rp),unsigned(RP_Max-1)));
+                            animDrawSlots.push_back({uint32_t(phaseBuckets[b].size()),b,false});
+                            phaseBuckets[b].push_back(d);
+                        }
                     }
                     triangleCount+=ib.count/3;++totalDraws;
                 } else {
                     auto& gc=*gcPtr;
                     auto& sc=gc.subs[si];
                     scPtr=&sc;
-                    const bool wantWorldBake=!packet.dynamic && !packet.tv && isBatchablePhase && !gc.moved && !gc.instanced && sc.localVerts==nullptr;
+                    const bool wantWorldBake=!packet.dynamic && !packet.tv && isBatchablePhase && !gc.moved && !gc.instanced && sc.localVerts==nullptr && glob.poseCount==0;
                     if(sc.worldChunk<0 && !sc.localVerts) {
                         int i0=-1,i1=-1,i2=-1;
                         int chunkIdx=-1;unsigned base=0;
@@ -1953,16 +2593,31 @@ public:
                             }
                             gc.anyWorldBaked=true;++newFlattens;
                         } else {
-                            size_t bytes=vertCount*sizeof(Vertex);
-                            if(meshBytes+bytes>24*1024*1024)throw std::runtime_error("Native static mesh budget exceeded");
-                            sc.localVerts=static_cast<Vertex*>(linearAlloc(bytes));
-                            if(!sc.localVerts)throw std::runtime_error("Native static mesh allocation failed");
-                            sc.count=vertCount;sc.source=sub.vertices.data();meshBytes+=bytes;
-                            flatten(mainScratch,sc.localVerts,packet,sub,false,false,true,getScale(),nullptr,0,&sc.texMode,&i0,&i1,&i2,&sc.hasSoftAlpha);
-                            GSPGPU_FlushDataCache(sc.localVerts,bytes);++newFlattens;
+                            int lChunk=-1;unsigned lBase=0,lCap=0;
+                            if(allocLocalChunk(vertCount,lChunk,lBase,lCap)) {
+                                WorldChunk& lc=localChunks[lChunk];
+                                sc.localVerts=lc.vertices+lBase;
+                                sc.localBufOffset=lc.bufOffset+u32(lBase*sizeof(Vertex));
+                                sc.localChunk=lChunk;sc.localBase=lBase;sc.localCap=lCap;sc.localOwned=false;
+                                sc.count=vertCount;sc.source=sub.vertices.data();
+                                flatten(mainScratch,sc.localVerts,packet,sub,false,false,true,getScale(),nullptr,0,&sc.texMode,&i0,&i1,&i2,&sc.hasSoftAlpha);
+                                lc.dirtyMin=std::min(lc.dirtyMin,lBase);
+                                lc.dirtyMax=std::max(lc.dirtyMax,lBase+unsigned(vertCount));
+                                ++newFlattens;
+                            } else {
+                                size_t bytes=vertCount*sizeof(Vertex);
+                                if(meshBytes+bytes>24*1024*1024)throw std::runtime_error("Native static mesh budget exceeded");
+                                sc.localVerts=static_cast<Vertex*>(linearAlloc(bytes));
+                                if(!sc.localVerts)throw std::runtime_error("Native static mesh allocation failed");
+                                sc.localBufOffset=bufOffsetFor(sc.localVerts);
+                                sc.localChunk=-1;sc.localBase=0;sc.localCap=0;sc.localOwned=true;
+                                sc.count=vertCount;sc.source=sub.vertices.data();meshBytes+=bytes;
+                                flatten(mainScratch,sc.localVerts,packet,sub,false,false,true,getScale(),nullptr,0,&sc.texMode,&i0,&i1,&i2,&sc.hasSoftAlpha);
+                                GSPGPU_FlushDataCache(sc.localVerts,bytes);++newFlattens;
+                            }
                         }
                         sc.id0=int16_t(i0);sc.id1=int16_t(i1);sc.id2=int16_t(i2);
-                        sc.threeWay=isSubThreeWay;sc.texValid=true;sc.tex0=nullptr;
+                        sc.threeWay=isSubThreeWay;sc.texValid=true;sc.tex0=nullptr;sc.batchKey=0xFFFFu;
                         resolveSubTextures(sc,sub.uvSai!=nullptr,t0,t1,t2);
                     } else if(sc.worldChunk>=0) {
                         if(sub.uvSai) {
@@ -1976,7 +2631,13 @@ public:
                         if(needStaticMoveCheck && shouldReshadeMoved && sub.pshd && sub.pshd->shdk==SHDK_ThreeWay) {
                             int i0=-1,i1=-1,i2=-1;
                             {u64 k0=svcGetSystemTick();flatten(mainScratch,sc.localVerts,packet,sub,false,false,true,getScale(),nullptr,0,&sc.texMode,&i0,&i1,&i2,&sc.hasSoftAlpha);tkMoved+=svcGetSystemTick()-k0;}
-                            GSPGPU_FlushDataCache(sc.localVerts,vertCount*sizeof(Vertex));
+                            if(sc.localChunk>=0) {
+                                WorldChunk& lc=localChunks[sc.localChunk];
+                                lc.dirtyMin=std::min(lc.dirtyMin,sc.localBase);
+                                lc.dirtyMax=std::max(lc.dirtyMax,sc.localBase+unsigned(vertCount));
+                            } else {
+                                GSPGPU_FlushDataCache(sc.localVerts,vertCount*sizeof(Vertex));
+                            }
                             sc.id0=int16_t(i0);sc.id1=int16_t(i1);sc.id2=int16_t(i2);sc.tex0=nullptr;
                             ++movedFlattens;
                         } else if(sub.uvSai) {
@@ -1994,23 +2655,37 @@ public:
                         const bool isOpaquePhase=(packet.rp==RP_Opaque || packet.rp==RP_OpaqueAfterProjVolume);
                         const bool isCutoutPhase=(packet.rp==RP_Cutout || packet.rp==RP_CutoutAfterProjVolume);
                         const C3D_Tex* alphaTex=(texMode>=1)?t1:t0;
-                        const bool batchableCutout=isCutoutPhase && packet.pglob->fTransluscentSort && !sc.hasSoftAlpha && isBinaryAlphaTex(alphaTex);
+                        bool batchableCutout=isCutoutPhase && packet.pglob->fTransluscentSort && !sc.hasSoftAlpha && isBinaryAlphaTex(alphaTex);
+                        if(isCutoutPhase && !batchableCutout && packet.pglob->fTransluscentSort &&
+                           !packet.tv && packet.palo!=g_pjt && g_ui.uis==UIS_Playing &&
+                           packet.darken>=0.999f && packet.alpha>=0.999f &&
+                           estimateScreenPxWorld(sc.worldCenter,sc.worldRadius)<40.0f) {
+                            batchableCutout=true;
+                        }
+                        uint16_t bKey=0xFFFFu;
                         if((isOpaquePhase || batchableCutout) && packet.darken>=0.999f && packet.alpha>=0.999f) {
-                            staticBatches[packet.rp].push_back({sc.worldIndices.data(),unsigned(sc.worldIndices.size()),sc.worldChunk,texMode,t0,t1,t2});
+                            if(!sub.uvSai && sc.batchKey!=0xFFFFu)bKey=sc.batchKey;
+                            else {
+                                bKey=getBatchKey(sc.worldChunk,texMode,t0,t1,t2);
+                                if(!sub.uvSai)sc.batchKey=bKey;
+                            }
+                        }
+                        if(bKey!=0xFFFFu) {
+                            staticBatches[packet.rp].push_back({sc.worldIndices.data(),unsigned(sc.worldIndices.size()),bKey,packet.z});
                             totalBatchIndices+=sc.worldIndices.size();
                         } else {
-                            fadedWorldDraws.push_back({sc.worldIndices.data(),unsigned(sc.worldIndices.size()),worldChunks[sc.worldChunk].vertices,texMode,t0,t1,t2,&packet,packet.rp,&sub,sc.hasSoftAlpha});
+                            fadedWorldDraws.push_back({sc.worldIndices.data(),unsigned(sc.worldIndices.size()),worldChunks[sc.worldChunk].vertices,worldChunks[sc.worldChunk].bufOffset,texMode,t0,t1,t2,&packet,packet.rp,&sub,sc.hasSoftAlpha});
                             totalBatchIndices+=sc.worldIndices.size();
                         }
                         triangleCount+=unsigned(sc.worldIndices.size())/3;++totalDraws;
                     } else {
                         vertices=sc.localVerts;
-                        if(packetCasterIdx>=0)casterDynVerts[packetCasterIdx].push_back({&sub,sc.localVerts});
+                        if(packetCasterIdx>=0 && casterNeedRender[packetCasterIdx])casterDynVerts[packetCasterIdx].push_back({&sub,sc.localVerts,sc.localBufOffset});
                         if(!sc.localIndices) {
                             const auto& ib=indexBufferFor(sub,glob.VAO);
-                            sc.localIndices=ib.data;sc.localIndexCount=ib.count;
+                            sc.localIndices=ib.data;sc.localIndexCount=ib.count;sc.localIdxPhysOffset=ib.physOffset;
                         }
-                        Draw d{vertices,sc.localIndices,sc.localIndexCount,t0,t1,t2,texMode,false,isFlipped(),sc.hasSoftAlpha,&packet,packet.rp,packet.z,sub.pshd,&sub};
+                        Draw d{vertices,sc.localBufOffset,sc.localIndices,sc.localIndexCount,t0,t1,t2,texMode,false,isFlipped(),sc.hasSoftAlpha,&packet,packet.rp,packet.z,sub.pshd,&sub,uint32_t(pi),std::clamp(packet.darken,0.0f,1.0f),std::clamp(packet.alpha,0.0f,1.0f),DrawKind::StandardAlpha,sc.localIdxPhysOffset};
                         if(packet.tv)tvDraws.push_back(d);
                         else phaseBuckets[std::min(unsigned(packet.rp),unsigned(RP_Max-1))].push_back(d);
                         triangleCount+=sc.localIndexCount/3;++totalDraws;
@@ -2041,6 +2716,7 @@ public:
         // here after workers finish; no allocation may invalidate earlier draws.
         size_t animatedIndexBudget=0;
         for(const auto& job:animJobs) {
+            if(job.dstOverride)continue;
             const auto& packet=canePackets[job.packetIdx];
             if(!packet.tv)animatedIndexBudget+=packet.pglob->asubglob[job.subIdx].indices.size()*3;
         }
@@ -2049,92 +2725,83 @@ public:
         for(RP rp:{RP_Opaque,RP_Cutout,RP_OpaqueAfterProjVolume,RP_CutoutAfterProjVolume}) {
             auto& entries=staticBatches[rp];
             if(entries.empty())continue;
-            std::sort(entries.begin(),entries.end(),[](const BatchEntry& a,const BatchEntry& b) {
-                if(a.chunkIdx!=b.chunkIdx)return a.chunkIdx<b.chunkIdx;
-                if(a.texMode!=b.texMode)return a.texMode<b.texMode;
-                if(a.tex0!=b.tex0)return a.tex0<b.tex0;
-                if(a.tex1!=b.tex1)return a.tex1<b.tex1;
-                return a.tex2<b.tex2;
-            });
+            touchedKeys.clear();
+            entryNext.resize(entries.size());
+            for(uint32_t idx=0;idx<uint32_t(entries.size());++idx) {
+                const uint16_t k=entries[idx].key;
+                if(bucketHead[k]==~0u)touchedKeys.push_back(k);
+                entryNext[idx]=bucketHead[k];
+                bucketHead[k]=idx;
+            }
             auto& outMerged=mergedDraws[rp];
-            for(const auto& e:entries) {
-                std::memcpy(batchIndices[slot]+batchUsed,e.src,e.count*sizeof(uint16_t));
-                if(!outMerged.empty() && outMerged.back().chunkIdx==e.chunkIdx && outMerged.back().texMode==e.texMode &&
-                   outMerged.back().tex0==e.tex0 && outMerged.back().tex1==e.tex1 && outMerged.back().tex2==e.tex2 &&
-                   outMerged.back().indexOffset+outMerged.back().indexCount==batchUsed) {
-                    outMerged.back().indexCount+=e.count;
-                } else {
-                    outMerged.push_back({e.chunkIdx,e.texMode,e.tex0,e.tex1,e.tex2,unsigned(batchUsed),e.count});
+            outMerged.reserve(touchedKeys.size());
+            for(uint16_t k:touchedKeys) {
+                const unsigned startOff=unsigned(batchUsed);
+                unsigned totalCount=0;
+                float minD2=entries[bucketHead[k]].distSq;
+                for(uint32_t idx=bucketHead[k];idx!=~0u;idx=entryNext[idx]) {
+                    const auto& e=entries[idx];
+                    std::memcpy(batchIndices[slot]+batchUsed,e.src,e.count*sizeof(uint16_t));
+                    batchUsed+=e.count;
+                    totalCount+=e.count;
+                    if(e.distSq<minD2)minD2=e.distSq;
                 }
-                batchUsed+=e.count;
+                bucketHead[k]=~0u;
+                const BatchKeyDesc& kd=batchKeyTable[k];
+                outMerged.push_back({kd.chunkIdx,kd.texMode,kd.tex0,kd.tex1,kd.tex2,startOff,totalCount,minD2});
+            }
+            if((rp==RP_Opaque || rp==RP_OpaqueAfterProjVolume) && outMerged.size()>1) {
+                auto band=[](float d2)->int {return d2<1000000.0f?0:(d2<6250000.0f?1:2);};
+                std::sort(outMerged.begin(),outMerged.end(),[&](const MergedDraw& a,const MergedDraw& b) {
+                    const int ba=band(a.minDistSq),bb=band(b.minDistSq);
+                    if(ba!=bb)return ba<bb;
+                    if(a.chunkIdx!=b.chunkIdx)return a.chunkIdx<b.chunkIdx;
+                    if(a.texMode!=b.texMode)return a.texMode<b.texMode;
+                    if(a.tex0!=b.tex0)return std::less<C3D_Tex*>{}(a.tex0,b.tex0);
+                    if(a.tex1!=b.tex1)return std::less<C3D_Tex*>{}(a.tex1,b.tex1);
+                    return std::less<C3D_Tex*>{}(a.tex2,b.tex2);
+                });
             }
         }
         for(const auto& fw:fadedWorldDraws) {
             unsigned off=unsigned(batchUsed);
             std::memcpy(batchIndices[slot]+off,fw.src,fw.count*sizeof(uint16_t));
             batchUsed+=fw.count;
-            phaseBuckets[fw.phase].push_back({fw.chunkVerts,batchIndices[slot]+off,fw.count,fw.tex0,fw.tex1,fw.tex2,fw.texMode,true,false,fw.hasSoftAlpha,fw.material,fw.phase,fw.material->z,fw.sub->pshd,fw.sub});
-        }
-        unsigned particles=0;
-        auto curve=[](const CLQ& q,float t) {return q.g0+t*(q.g1+t*q.g2);};
-        glm::vec3 right=glm::normalize(glm::vec3(g_pcm->mat[1])),up=glm::normalize(glm::vec3(g_pcm->mat[2]));
-        for(const auto& packet:caneParticles) {
-            const auto& group=*packet.group;
-            if(!group.pshd || group.pshd->atex.empty())continue;
-            const auto& tex=group.pshd->atex[0];
-            const auto& images=group.pshd->shdk==SHDK_ThreeWay?tex.ambientImageIndex:tex.diffuseImageIndex;
-            int table=std::clamp(group.cqwTexture,0,32);if(!table || images.empty())continue;
-            unsigned links=0;
-            for(BLIP* blip=group.dlBlip.pblipFirst;blip && links++<1024;blip=blip->dle.pblipNext) {
-                const auto& data=blip->ablipf[blip->iblipfLatest&1];
-                for(int i=0;i<std::clamp(blip->cblipe,0,44) && particles<8192;++i) {
-                    const auto& pos=data.ablipp[i];const auto& extra=data.ablipx[i];
-                    float age=g_clock.t-pos.tCreated,scale=curve(group.clqScale,age);
-                    float alpha=std::clamp(curve(group.clqAlpha,age),0.0f,1.0f)*packet.alpha;
-                    float frameValue=curve(group.clqTexture,age);
-                    if(!std::isfinite(scale)||!std::isfinite(frameValue)||alpha<=.001f)continue;
-                    int entry=((int(extra.itex0%table)+int(std::clamp(frameValue,-100000.0f,100000.0f)))%table+table)%table;
-                    int imageFrame=group.aiframeTexture[entry];
-                    if(imageFrame<0 || size_t(imageFrame)>=images.size())continue;
-                    C3D_Tex* pt=texture(images[imageFrame],false,true);
-                    glm::vec4 color(1);int colors=std::clamp(group.crgba,0,32);
-                    if(colors) {
-                        int c=std::min(unsigned(colors-1),unsigned(extra.irgba));color=group.argba[c];
-                        if(group.fColorRanges && c+1<colors)color=glm::mix(color,group.argba[c+1],std::clamp(curve(group.clqColor,age),0.0f,1.0f));
-                    }
-                    color.a*=alpha;
-                    const uint8_t pcol[4]={packByte(color.r),packByte(color.g),packByte(color.b),packByte(color.a)};
-                    glm::vec3 center=glm::vec3(packet.model*glm::vec4(pos.x,pos.y,pos.z,1));
-                    glm::vec3 horizontal=right*scale,vertical=up*scale;
-                    if(group.blipok==BLIPOK_Rolling) {
-                        float c=std::cos(extra.radRoll),s=std::sin(extra.radRoll);
-                        horizontal=(right*c+up*s)*scale;vertical=(-right*s+up*c)*scale;
-                    } else if(group.blipok==BLIPOK_Flying) {
-                        const auto& v=data.ablipv[i];
-                        glm::vec3 line=glm::mat3(packet.model)*glm::vec3(v.x,v.y,v.z)*(group.rSFlying*g_clock.dt);
-                        glm::vec2 screen(glm::dot(line,right),glm::dot(line,up));float length=glm::length(screen);
-                        if(length>.0001f) {
-                            horizontal=(right*(-screen.y/length)+up*(screen.x/length))*std::abs(scale);
-                            if(length<2*std::abs(scale))line+=(right*screen.x+up*screen.y)*((2*std::abs(scale)-length)/length);
-                        } else line=up*(2*std::abs(scale));
-                        center+=line*.5f;vertical=line*.5f;
-                    }
-                    bool additive=(group.pshd->grfshd&1)!=0;
-                    if(particleDraws.empty() || particleDraws.back().tex!=pt || particleDraws.back().additive!=additive)
-                        particleDraws.push_back({unsigned(used),0,pt,additive,0});
-                    if(pcol[3]>particleDraws.back().maxAlpha)particleDraws.back().maxAlpha=pcol[3];
-                    const float corners[6][2]={{-1,-1},{1,-1},{-1,1},{-1,1},{1,-1},{1,1}};
-                    for(const auto& c:corners) {
-                        auto& out=dynamic[slot][used++];glm::vec3 point=center+horizontal*c[0]+vertical*c[1];
-                        std::memcpy(out.position,&point,sizeof out.position);std::memcpy(out.color,pcol,4);
-                        out.uv[0]=c[0]*.5f+.5f;out.uv[1]=1-(c[1]*.5f+.5f);
-                    }
-                    particleDraws.back().count+=6;++particles;
-                }
-            }
+            const u32 idxPhys=batchIndicesPhys[slot]!=~0u?(batchIndicesPhys[slot]+u32(off*sizeof(uint16_t))):~0u;
+            phaseBuckets[fw.phase].push_back({fw.chunkVerts,fw.bufOffset,batchIndices[slot]+off,fw.count,fw.tex0,fw.tex1,fw.tex2,fw.texMode,true,false,fw.hasSoftAlpha,fw.material,fw.phase,fw.material->z,fw.sub->pshd,fw.sub,~0u,std::clamp(fw.material->darken,0.0f,1.0f),std::clamp(fw.material->alpha,0.0f,1.0f),DrawKind::StandardAlpha,idxPhys});
         }
         drainWave(mainScratch);
         guard1.finish();
+        for(auto& lc:localChunks) {
+            if(lc.dirtyMin<lc.dirtyMax) {
+                GSPGPU_FlushDataCache(lc.vertices+lc.dirtyMin,(lc.dirtyMax-lc.dirtyMin)*sizeof(Vertex));
+                lc.dirtyMin=~0u;lc.dirtyMax=0;
+            }
+        }
+        for(const auto& f:ownedLiveFlush) {
+            if(f.ptr && f.bytes)GSPGPU_FlushDataCache(f.ptr,f.bytes);
+        }
+        unsigned particles=0;
+        for(size_t pj=0;pj<particleJobs.size();++pj) {
+            const auto& jVerts=particleJobVerts[pj];
+            const auto& jDraws=particleJobDraws[pj];
+            if(jVerts.empty() || jDraws.empty())continue;
+            const unsigned baseVert=unsigned(used);
+            std::memcpy(dynamic[slot]+used,jVerts.data(),jVerts.size()*sizeof(Vertex));
+            used+=jVerts.size();
+            particles+=unsigned(jVerts.size()/6u);
+            for(const auto& pd:jDraws) {
+                if(!pd.count)continue;
+                if(!particleDraws.empty() && particleDraws.back().tex==pd.tex &&
+                   particleDraws.back().additive==pd.additive &&
+                   particleDraws.back().first+particleDraws.back().count==baseVert+pd.first) {
+                    particleDraws.back().count+=pd.count;
+                    if(pd.maxAlpha>particleDraws.back().maxAlpha)particleDraws.back().maxAlpha=pd.maxAlpha;
+                } else {
+                    particleDraws.push_back({baseVert+pd.first,pd.count,pd.tex,pd.additive,pd.maxAlpha});
+                }
+            }
+        }
         pk[4]=svcGetSystemTick();
         for(size_t i=0;i<animJobs.size();++i) {
             const auto& job=animJobs[i];
@@ -2144,6 +2811,12 @@ public:
             if(job.texMode==0) {d.tex0=texture(job.i0);}
             else if(job.texMode==1) {d.tex1=texture(job.i1);d.tex0=(job.i0==job.i1?d.tex1:texture(job.i0,false,false,64));}
             else {d.tex1=texture(job.i1);d.tex0=(job.i0==job.i1?d.tex1:texture(job.i0,false,false,64));d.tex2=(job.i2==job.i1?d.tex1:(job.i2==job.i0?d.tex0:texture(job.i2,false,false,64)));}
+            if(job.liveKey.sub) {
+                if(LiveEntry* lePtr=liveLightCache.find(job.liveKey)) {
+                    lePtr->texMode=job.texMode;lePtr->hasSoftAlpha=job.hasSoftAlpha;
+                    lePtr->i0=job.i0;lePtr->i1=job.i1;lePtr->i2=job.i2;
+                }
+            }
         }
         unsigned animatedDrawsSaved=0;
         // Batch opaque geometry only. Cutouts and light effects retain their
@@ -2180,47 +2853,112 @@ public:
                 first=end;
             }
             animatedDrawsSaved+=CaneMergeDynamicDraws(draws,batchIndices[slot],batchUsed,dynamicOffset,compatible);
+            if(batchIndicesPhys[slot]!=~0u && batchUsed) {
+                for(Draw& d:draws) {
+                    if(d.indices>=batchIndices[slot] && d.indices<batchIndices[slot]+batchUsed) {
+                        d.idxPhysOffset=batchIndicesPhys[slot]+u32((d.indices-batchIndices[slot])*sizeof(uint16_t));
+                    }
+                }
+            }
+            if(draws.size()>1) {
+                const auto band=[](float d2)->int {return d2<810000.0f?0:1;};
+                std::sort(draws.begin(),draws.end(),[&](const Draw& a,const Draw& b) {
+                    const int ba=band(a.distance),bb=band(b.distance);
+                    if(ba!=bb)return ba<bb;
+                    if(a.texMode!=b.texMode)return a.texMode<b.texMode;
+                    if(a.tex0!=b.tex0)return std::less<const void*>{}(a.tex0,b.tex0);
+                    if(a.tex1!=b.tex1)return std::less<const void*>{}(a.tex1,b.tex1);
+                    if(a.tex2!=b.tex2)return std::less<const void*>{}(a.tex2,b.tex2);
+                    if(a.vertices!=b.vertices)return std::less<const void*>{}(a.vertices,b.vertices);
+                    if(a.material!=b.material)return std::less<const void*>{}(a.material,b.material);
+                    return a.flipped<b.flipped;
+                });
+            }
         }
+        auto resolveDrawKinds=[&](std::vector<Draw>& list) {
+            for(Draw& d:list) {
+                if(d.phase==RP_ProjVolume) {d.kind=DrawKind::ProjVolume;continue;}
+                if(d.phase==RP_Cutout || d.phase==RP_CutoutAfterProjVolume || d.phase==RP_Translucent) {
+                    const bool cutout=(d.phase==RP_Cutout || d.phase==RP_CutoutAfterProjVolume);
+                    const unsigned flags=d.shader?d.shader->grfshd:2;
+                    const bool additive=!cutout?(flags!=2 && flags!=6):!d.material->pglob->fTransluscentSort;
+                    const C3D_Tex* alphaTex=(d.texMode>=1)?(d.tex1?d.tex1:&white):(d.tex0?d.tex0:&white);
+                    bool binaryCutout=cutout && !additive && !d.hasSoftAlpha &&
+                        d.tintAlpha>=0.999f && isBinaryAlphaTex(alphaTex);
+                    if(cutout && !binaryCutout && !additive && d.tintAlpha>=0.89f &&
+                       !d.material->tv && d.material->palo!=g_pjt && g_ui.uis==UIS_Playing && d.sub) {
+                        float scale=1.0f;
+                        if(!d.worldBaked) {
+                            const glm::mat3 r(d.material->model);
+                            scale=std::max({glm::length(r[0]),glm::length(r[1]),glm::length(r[2])});
+                        } else if(d.material->pglob) {
+                            scale=d.material->pglob->rSubglobRadius;
+                        }
+                        if(estimateScreenPx(d.material->model,d.sub->posCenter,d.sub->sRadius*scale)<40.0f)
+                            binaryCutout=true;
+                    }
+                    if(binaryCutout)d.kind=DrawKind::BinaryCutout;
+                    else if(d.tintAlpha>=0.89f)d.kind=additive?DrawKind::TwoPassAdditive:DrawKind::TwoPassAlpha;
+                    else d.kind=additive?DrawKind::OnePassAdditive:DrawKind::OnePassAlpha;
+                } else if((d.phase==RP_Opaque || d.phase==RP_OpaqueAfterProjVolume) && !d.material->tv && d.tintAlpha>=0.999f) {
+                    d.kind=DrawKind::Opaque;
+                } else {
+                    d.kind=DrawKind::StandardAlpha;
+                }
+            }
+        };
+        for(int rp=0;rp<RP_Max;++rp)if(!phaseBuckets[rp].empty())resolveDrawKinds(phaseBuckets[rp]);
+        if(!tvDraws.empty())resolveDrawKinds(tvDraws);
         if(batchUsed)GSPGPU_FlushDataCache(batchIndices[slot],batchUsed*sizeof(uint16_t));
-        for(size_t ci=0;ci<celJobs.size() && outlineLines.size()<outlineBudget;++ci) {
-            const auto& out=celJobOut[ci];
-            size_t avail=outlineBudget-outlineLines.size();
-            size_t take=std::min(avail,out.size());
-            outlineLines.insert(outlineLines.end(),out.begin(),out.begin()+take);
-        }
-        unsigned outlineSegments=unsigned(outlineLines.size());
-        if(frame%120==0)std::fprintf(stderr,"Native render savings: animated-draws=%u per-eye outline-small=%u outline-reduced=%u\n",animatedDrawsSaved,outlineLodSkipped,outlineLodReduced);
+        if(frame%120==0)std::fprintf(stderr,"Native render savings: animated-draws=%u per-eye outline-small=%u outline-reduced=%u shadows-skipped=%u live-skip=%u\n",animatedDrawsSaved,outlineLodSkipped,outlineLodReduced,shadowMapsSkipped,liveLightSkipped);
+        size_t casterJobCursor=0;
         for(size_t mapIndex=0;mapIndex<caneCasters.size();++mapIndex) {
             const auto& caster=caneCasters[mapIndex];SHADOW* shadow=caster.owner->pshadowGen;
             auto& map=shadowMaps[mapIndex];
+            bool needRender=casterNeedRender[mapIndex];
             if(!map.target) {
                 if(!C3D_TexInitVRAM(&map.texture,shadowSize,shadowSize,GPU_RGBA8))throw std::runtime_error("Native shadow texture allocation failed");
                 C3D_TexSetFilter(&map.texture,GPU_LINEAR,GPU_LINEAR);
                 C3D_TexSetWrap(&map.texture,GPU_CLAMP_TO_BORDER,GPU_CLAMP_TO_BORDER);map.texture.border=0;
                 map.target=C3D_RenderTargetCreateFromTex(&map.texture,GPU_TEXFACE_2D,0,GPU_RB_DEPTH16);
                 if(!map.target)throw std::runtime_error("Native shadow target allocation failed");
+                needRender=true;
             }
             // Project the original animated caster into its authored shadow UVs.
             // Unlike the desktop clip conversion, PICA needs Z within [-W,0].
-            glm::mat4 uvToClip(0);uvToClip[0][0]=2;uvToClip[1][1]=2;
-            uvToClip[3]=glm::vec4(-1,-1,-.5f,1);
-            ShadowPass pass{unsigned(casterSubs.size()),0,0,0,uvToClip*shadow->matWorldToUv*caster.model,std::clamp(caster.alpha,0.0f,1.0f)};
-            const glm::mat3 casterRot(caster.model);
-            const float casterMaxScale=std::max({glm::length(casterRot[0]),glm::length(casterRot[1]),glm::length(casterRot[2])});
-            const auto& reused=casterDynVerts[mapIndex];
-            for(auto& glob:caster.owner->globset.aglob)for(auto& sub:glob.asubglob) {
-                size_t vertCount=sub.vertices.size(),idxCount=sub.indices.size()*3;if(!vertCount || !idxCount)continue;
-                const auto& ib=indexBufferFor(sub,glob.VAO);
-                const Vertex* cvPtr=nullptr;
-                for(const auto& r:reused)if(r.sub==&sub) {cvPtr=r.vertices;break;}
-                if(!cvPtr) {
-                    Vertex* dyn=dynamic[slot]+used;
-                    CanePacket packet{&glob,caster.owner,caster.model,caster.alpha,RP_DynamicTexture,0};
-                    flatten(mainScratch,dyn,packet,sub,animated(packet,sub),false,false,casterMaxScale);
-                    used+=vertCount;cvPtr=dyn;
+            ShadowPass pass{unsigned(casterSubs.size()),0,0,0,casterProj[mapIndex],casterAlpha[mapIndex],needRender};
+            if(needRender) {
+                if(!casterHasPacket[mapIndex]) {
+                    while(casterJobCursor<casterJobs.size() && casterJobs[casterJobCursor].mapIndex<mapIndex)++casterJobCursor;
+                    while(casterJobCursor<casterJobs.size() && casterJobs[casterJobCursor].mapIndex==mapIndex) {
+                        const auto& job=casterJobs[casterJobCursor++];
+                        const auto& ib=indexBufferFor(*job.sub,job.glob->VAO);
+                        casterSubs.push_back({dynamic[slot]+job.dynOffset,dynamicBufOffset[slot]+u32(job.dynOffset*sizeof(Vertex)),ib.data,ib.count});
+                        ++pass.subCount;
+                    }
+                } else {
+                    const glm::mat3 casterRot(caster.model);
+                    const float casterMaxScale=std::max({glm::length(casterRot[0]),glm::length(casterRot[1]),glm::length(casterRot[2])});
+                    const auto& reused=casterDynVerts[mapIndex];
+                    for(auto& glob:caster.owner->globset.aglob)for(auto& sub:glob.asubglob) {
+                        size_t vertCount=sub.vertices.size(),idxCount=sub.indices.size()*3;if(!vertCount || !idxCount)continue;
+                        const auto& ib=indexBufferFor(sub,glob.VAO);
+                        const Vertex* cvPtr=nullptr;u32 cvBufOff=dynamicBufOffset[slot];
+                        for(const auto& r:reused)if(r.sub==&sub) {cvPtr=r.vertices;cvBufOff=r.bufOffset;break;}
+                        if(!cvPtr) {
+                            const size_t base=used;
+                            Vertex* dyn=dynamic[slot]+base;
+                            CanePacket packet{&glob,caster.owner,caster.model,caster.alpha,RP_DynamicTexture,0};
+                            flatten(mainScratch,dyn,packet,sub,animated(packet,sub),false,false,casterMaxScale);
+                            used+=vertCount;cvPtr=dyn;cvBufOff=dynamicBufOffset[slot]+u32(base*sizeof(Vertex));
+                        }
+                        casterSubs.push_back({cvPtr,cvBufOff,ib.data,ib.count});
+                        ++pass.subCount;
+                    }
                 }
-                casterSubs.push_back({cvPtr,ib.data,ib.count});
-                ++pass.subCount;
+                map.lastOwner=caster.owner;map.lastProjection=casterProj[mapIndex];
+                map.lastAlpha=casterAlpha[mapIndex];map.lastPoseHash=casterPoseHash[mapIndex];
+                map.lastUpdateFrame=frame;map.valid=true;
             }
             const float cl=glm::length(shadow->normalCast);
             const glm::vec3 negCastDir=cl>.001f?-shadow->normalCast/cl:glm::vec3(0);
@@ -2231,21 +2969,17 @@ public:
         if(shadowJobOut.size()<shadowReceivers.size())shadowJobOut.resize(shadowReceivers.size());
         pk[5]=svcGetSystemTick();
         WaveGuard guard2{this,!shadowReceivers.empty()?kickWave(WaveMode::ShadowClip,uint32_t(shadowReceivers.size())):false};
-        unsigned outlineFirst=unsigned(used);
-        for(const auto& line:outlineLines) {
-            const unsigned endpoints[6]={0,1,0,0,1,1};const float sides[6]={-1,-1,1,1,-1,1};
-            const uint8_t lcol[4]={packByte(line.color.r),packByte(line.color.g),packByte(line.color.b),packByte(line.color.a)};
-            for(unsigned i=0;i<6;++i) {
-                glm::vec4 expanded=(endpoints[i]?line.b:line.a);
-                expanded.x+=line.offset.x*expanded.w*sides[i];expanded.y+=line.offset.y*expanded.w*sides[i];
-                expanded.z=std::clamp(expanded.z+.00001f*expanded.w,-expanded.w+.000001f,-.000001f);
-                float invW=1.0f/expanded.w;
-                auto& vertex=dynamic[slot][used++];
-                vertex.position[0]=expanded.x*invW;vertex.position[1]=expanded.y*invW;vertex.position[2]=expanded.z*invW;
-                std::memcpy(vertex.color,lcol,4);
-                vertex.uv[0]=0;vertex.uv[1]=0;
+        unsigned outlineFirst=unsigned(used),outlineVertCount=0;
+        const size_t maxOutlineVerts=std::min(celEdgeCap,size_t(outlineBudget))*6;
+        for(size_t ci=0;ci<celJobs.size() && outlineVertCount<maxOutlineVerts;++ci) {
+            const auto& src=celJobVerts[ci];
+            const size_t take=std::min(maxOutlineVerts-outlineVertCount,src.size());
+            if(take) {
+                std::memcpy(dynamic[slot]+used,src.data(),take*sizeof(Vertex));
+                used+=take;outlineVertCount+=unsigned(take);
             }
         }
+        const unsigned outlineSegments=outlineVertCount/6;
         if(!shadowReceivers.empty()) {
             drainWave(mainScratch);
             guard2.finish();
@@ -2302,15 +3036,26 @@ public:
                 }
             }
         }
+        std::memset(dynamic[slot],0,3*sizeof(Vertex));
         if(used)GSPGPU_FlushDataCache(dynamic[slot],used*sizeof(Vertex));
         // Retire local caches for objects no longer submitted, without retaining game pointers.
         if(frame%60==0) {
             globCacheMap.eraseIf([&](const GlobKey&,uint32_t idx) {
                 GlobCache& gc=globCachePool[idx];
                 if(!gc.anyWorldBaked && frame-gc.used>120) {
-                    for(auto& sc:gc.subs)if(sc.localVerts) {meshBytes-=sc.count*sizeof(Vertex);linearFree(sc.localVerts);}
+                    for(auto& sc:gc.subs)if(sc.localVerts) {
+                        freeLocalAllocation(sc.localVerts,sc.localChunk,sc.localBase,sc.localCap,sc.count,sc.localOwned);
+                    }
                     gc=GlobCache{};
                     globCacheFree.push_back(idx);
+                    return true;
+                }
+                return false;
+            });
+            liveLightCache.eraseIf([&](const LiveKey&,LiveEntry& le) {
+                if(frame-le.usedFrame>120) {
+                    freeLocalAllocation(le.verts[0],le.chunk[0],le.base[0],le.cap[0],le.count,le.owned[0]);
+                    freeLocalAllocation(le.verts[1],le.chunk[1],le.base[1],le.cap[1],le.count,le.owned[1]);
                     return true;
                 }
                 return false;
@@ -2325,28 +3070,88 @@ public:
         if(frame<=2)std::fprintf(stderr,"frame %u: GPU draws=%u\n",frame,totalDraws);
         cpuMs=float(double(svcGetSystemTick()-beginTick)/268111.856);
         C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
-        bindGameplayProgram();
+        inFrameCmd=true;
+        tintValid=false;
+        bindSceneProgram(false,false);
         u64 tBegin=osGetTime();
         C3D_CullFace(GPU_CULL_NONE);setStereo();
+        auto* frameBuf=C3D_GetBufInfo();BufInfo_Init(frameBuf);BufInfo_Add(frameBuf,dynamic[slot],sizeof(Vertex),3,0x210);
+        bool bufInfoFlushed=false,c3dStateDirty=true;
+        u32 lastBufOffset=dynamicBufOffset[slot];
+        auto setBufOffset=[&](u32 offset) {
+            if(offset!=lastBufOffset) {
+                frameBuf->buffers[0].offset=offset;lastBufOffset=offset;
+                if(bufInfoFlushed && gpuCmdBuf)GPUCMD_AddWrite(GPUREG_ATTRIBBUFFER0_OFFSET,offset);
+            }
+        };
+        auto writeProjDirect=[&](const C3D_Mtx& m) {
+            if(projection<0)return;
+            if(gpuCmdBuf) {
+                GPUCMD_AddWrite(GPUREG_VSH_FLOATUNIFORM_CONFIG,0x80000000u|u32(projection));
+                GPUCMD_AddWrites(GPUREG_VSH_FLOATUNIFORM_DATA,reinterpret_cast<const u32*>(m.r),16);
+                for(int i=0;i<4;++i)C3D_FVUnifDirty[GPU_VERTEX_SHADER][projection+i]=false;
+            } else {
+                C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER,projection,&m);
+            }
+        };
+        auto writeStereoDirect=[&](float z,float w,float limit) {
+            if(stereo<0)return;
+            const C3D_FVec v=FVec4_New(z,w,limit,0.0f);
+            if(gpuCmdBuf) {
+                GPUCMD_AddWrite(GPUREG_VSH_FLOATUNIFORM_CONFIG,0x80000000u|u32(stereo));
+                GPUCMD_AddWrites(GPUREG_VSH_FLOATUNIFORM_DATA,reinterpret_cast<const u32*>(&v),4);
+                C3D_FVUnifDirty[GPU_VERTEX_SHADER][stereo]=false;
+            } else {
+                C3D_FVUnifSet(GPU_VERTEX_SHADER,stereo,z,w,limit,0.0f);
+            }
+        };
+        auto drawElementsFast=[&](const uint16_t* indices,u32 idxPhysOffset,unsigned count) {
+            if(!c3dStateDirty && bufInfoFlushed && idxPhysOffset!=~0u &&
+               gpuCmdBuf && gpuCmdBufOffset+30u<=gpuCmdBufSize) {
+                const u32 cmds[30]={
+                    0x00000300u,GPUCMD_HEADER(0,0x2,GPUREG_PRIMITIVE_CONFIG),
+                    0x00000001u,GPUCMD_HEADER(0,0xF,GPUREG_RESTART_PRIMITIVE),
+                    idxPhysOffset|0x80000000u,GPUCMD_HEADER(0,0xF,GPUREG_INDEXBUFFER_CONFIG),
+                    count,GPUCMD_HEADER(0,0xF,GPUREG_NUMVERTICES),
+                    0x00000000u,GPUCMD_HEADER(0,0xF,GPUREG_VERTEX_OFFSET),
+                    0x00000100u,GPUCMD_HEADER(0,0x2,0x0229),
+                    0x00000100u,GPUCMD_HEADER(0,0x2,GPUREG_GEOSTAGE_CONFIG2),
+                    0x00000000u,GPUCMD_HEADER(0,0x1,GPUREG_START_DRAW_FUNC0),
+                    0x00000001u,GPUCMD_HEADER(0,0xF,GPUREG_DRAWELEMENTS),
+                    0x00000001u,GPUCMD_HEADER(0,0x1,GPUREG_START_DRAW_FUNC0),
+                    0x00000000u,GPUCMD_HEADER(0,0x2,0x0229),
+                    0x00000000u,GPUCMD_HEADER(0,0x2,GPUREG_GEOSTAGE_CONFIG2),
+                    0x00000001u,GPUCMD_HEADER(0,0xF,GPUREG_VTX_FUNC),
+                    0x00000000u,GPUCMD_HEADER(0,0x8,GPUREG_PRIMITIVE_CONFIG),
+                    0x00000000u,GPUCMD_HEADER(0,0x8,GPUREG_PRIMITIVE_CONFIG),
+                };
+                GPUCMD_AddRawCommands(cmds,30u);
+            } else {
+                C3D_DrawElements(GPU_TRIANGLES,count,C3D_UNSIGNED_SHORT,indices);
+                c3dStateDirty=false;bufInfoFlushed=true;
+            }
+        };
         for(size_t i=0;i<shadowPasses.size();++i) {
-            const auto& pass=shadowPasses[i];auto& map=shadowMaps[i];
-            C3D_RenderTargetClear(map.target,C3D_CLEAR_ALL,0,0);C3D_FrameDrawOn(map.target);
-            C3D_Mtx transform=matrix(pass.projection);C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER,projection,&transform);
+            const auto& pass=shadowPasses[i];if(!pass.renderMap)continue;auto& map=shadowMaps[i];
+            C3D_RenderTargetClear(map.target,C3D_CLEAR_ALL,0,0);C3D_FrameDrawOn(map.target);c3dStateDirty=true;
+            C3D_Mtx transform=matrix(pass.projection);writeProjDirect(transform);
             setTint(1,1,1,pass.alpha);
             auto* env=C3D_GetTexEnv(0);C3D_TexEnvSrc(env,C3D_RGB,GPU_CONSTANT);C3D_TexEnvColor(env,0xffffffff);
             C3D_TexEnvFunc(env,C3D_RGB,GPU_REPLACE);
             C3D_DepthTest(false,GPU_ALWAYS,GPU_WRITE_COLOR);C3D_AlphaTest(true,GPU_GREATER,0);
             C3D_AlphaBlend(GPU_BLEND_ADD,GPU_BLEND_ADD,GPU_ONE,GPU_ZERO,GPU_ONE,GPU_ZERO);
-            C3D_TexBind(0,&white);
+            C3D_TexBind(0,&white);c3dStateDirty=true;
             for(unsigned s=0;s<pass.subCount;++s) {
                 const auto& cs=casterSubs[pass.firstSub+s];
-                auto* buf=C3D_GetBufInfo();BufInfo_Init(buf);BufInfo_Add(buf,cs.vertices,sizeof(Vertex),3,0x210);
+                setBufOffset(cs.bufOffset);
                 C3D_DrawElements(GPU_TRIANGLES,cs.indexCount,C3D_UNSIGNED_SHORT,cs.indices);
+                bufInfoFlushed=true;c3dStateDirty=false;
             }
             env=C3D_GetTexEnv(0);C3D_TexEnvSrc(env,C3D_Both,GPU_TEXTURE0,GPU_PRIMARY_COLOR);C3D_TexEnvFunc(env,C3D_Both,GPU_MODULATE);
+            c3dStateDirty=true;
         }
         C3D_AlphaBlend(GPU_BLEND_ADD,GPU_BLEND_ADD,GPU_SRC_ALPHA,GPU_ONE_MINUS_SRC_ALPHA,GPU_ONE,GPU_ZERO);
-        C3D_AlphaTest(true,GPU_GREATER,24);
+        C3D_AlphaTest(true,GPU_GREATER,24);c3dStateDirty=true;
         const u32 skyClear=(u32(packByte(std::clamp(rgbaSky.r,0.0f,1.0f)))<<24)|
                            (u32(packByte(std::clamp(rgbaSky.g,0.0f,1.0f)))<<16)|
                            (u32(packByte(std::clamp(rgbaSky.b,0.0f,1.0f)))<<8)|0xffu;
@@ -2360,11 +3165,37 @@ public:
         const float stereoReference=CaneStereoOption3ds(2) && g_pjt?glm::distance(g_pcm->pos,g_pjt->xf.posWorld):g_pcm->sNearClip*12;
         packetMvps.resize(canePackets.size());
         packetMvpValid.assign(canePackets.size(),0);
+        struct StereoSlice {u32 start=0,end=0;};
+        u32* replayCmdBuf=nullptr;
+        StereoSlice replayOpaque{},replaySky{},replayRest{};
+        unsigned replayEye0Draws=0,replayEye0Merged=0;
+        bool replayValid=false;
         for(int eyeIndex=0;eyeIndex<(stereoActive?2:1);++eyeIndex) {
         C3D_RenderTarget* eyeTarget=postTarget?postTarget:(eyeIndex?rightTarget:target);
-        C3D_RenderTargetClear(eyeTarget,C3D_CLEAR_ALL,skyClear,0);C3D_FrameDrawOn(eyeTarget);
-        if(postTarget)C3D_SetViewport(0,0,displayMode==3?480:240,displayMode==3?800:400);
-        unlitState();C3D_AlphaTest(true,GPU_GREATER,24);
+        C3D_RenderTargetClear(eyeTarget,C3D_CLEAR_ALL,skyClear,0);C3D_FrameDrawOn(eyeTarget);c3dStateDirty=true;
+        if(postTarget) {C3D_SetViewport(0,0,displayMode==3?480:240,displayMode==3?800:400);c3dStateDirty=true;}
+        unlitState();c3dStateDirty=true;
+        bool lastAlphaEnable=true;GPU_TESTFUNC lastAlphaFunc=GPU_GREATER;int lastAlphaRef=0;
+        BlendMode lastBlend=BlendMode::Alpha;
+        auto setAlphaTest=[&](bool en,GPU_TESTFUNC fn,int ref) {
+            if(en!=lastAlphaEnable || (en && (fn!=lastAlphaFunc || ref!=lastAlphaRef))) {
+                C3D_AlphaTest(en,fn,ref);c3dStateDirty=true;
+                lastAlphaEnable=en;lastAlphaFunc=fn;lastAlphaRef=ref;
+            }
+        };
+        auto setBlend=[&](BlendMode mode) {
+            if(mode!=lastBlend) {
+                if(mode==BlendMode::Opaque) {
+                    C3D_ColorLogicOp(GPU_LOGICOP_COPY);
+                } else {
+                    const bool add=(mode==BlendMode::Additive);
+                    C3D_AlphaBlend(GPU_BLEND_ADD,GPU_BLEND_ADD,GPU_SRC_ALPHA,add?GPU_ONE:GPU_ONE_MINUS_SRC_ALPHA,GPU_ONE,GPU_ZERO);
+                }
+                c3dStateDirty=true;
+                lastBlend=mode;
+            }
+        };
+        setAlphaTest(true,GPU_GREATER,24);
         CaneStereoWarp eyeWarp{};
         float skyStereoW=0;
         if(stereoActive) {
@@ -2378,12 +3209,13 @@ public:
             skyStereoW=-k/convergence;
             if(std::abs(b)>.000001f) {warp.z=k/b;warp.w=-k*(a/b+1/convergence);}
             warp.limit*=CaneStereoOption3ds(4)*.01f;
-            setStereo(warp.z,warp.w,warp.limit);
+            bindSceneProgram(false,true);
+            writeStereoDirect(warp.z,warp.w,warp.limit);
+            c3dStateDirty=true;
         }
         const CanePacket* lastMaterial=nullptr;
         const C3D_Mtx* lastCamera=nullptr;
         bool lastWorldBaked=false;
-        const Vertex* lastBuf=nullptr;
         C3D_Tex* lastTex0=nullptr;
         C3D_Tex* lastTex1=nullptr;
         C3D_Tex* lastTex2=nullptr;
@@ -2391,11 +3223,13 @@ public:
         int currentTexMode=0;
         int lastCull=int(GPU_CULL_NONE);
         auto setCull=[&](GPU_CULLMODE mode) {
-            if(int(mode)!=lastCull) {C3D_CullFace(mode);lastCull=int(mode);}
+            if(int(mode)!=lastCull) {C3D_CullFace(mode);c3dStateDirty=true;lastCull=int(mode);}
         };
         auto setTexMode=[&](int mode) {
             if(mode==currentTexMode)return;
+            c3dStateDirty=true;
             if(mode==0) {
+                bindSceneProgram(false,sceneUseStereo);
                 auto* env0=C3D_GetTexEnv(0);C3D_TexEnvInit(env0);
                 C3D_TexEnvSrc(env0,C3D_Both,GPU_TEXTURE0,GPU_PRIMARY_COLOR);C3D_TexEnvFunc(env0,C3D_Both,GPU_MODULATE);
                 if(currentTexMode<0 || currentTexMode==2)C3D_TexEnvInit(C3D_GetTexEnv(2));
@@ -2406,6 +3240,7 @@ public:
                 currentTexMode=0;
                 return;
             }
+            bindSceneProgram(true,sceneUseStereo);
             if(currentTexMode!=1 && currentTexMode!=2) {
                 auto* env0=C3D_GetTexEnv(0);C3D_TexEnvInit(env0);
                 C3D_TexEnvSrc(env0,C3D_RGB,GPU_TEXTURE0,GPU_PRIMARY_COLOR);
@@ -2439,35 +3274,29 @@ public:
         auto drawMesh=[&](const Draw& draw,const C3D_Mtx& camera) {
             if(draw.material!=lastMaterial || &camera!=lastCamera || draw.worldBaked!=lastWorldBaked) {
                 if(draw.worldBaked) {
-                    C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER,projection,&camera);
+                    if(!lastWorldBaked || &camera!=lastCamera)writeProjDirect(camera);
                 } else {
-                    const uintptr_t matAddr=uintptr_t(draw.material),baseAddr=uintptr_t(canePackets.data());
-                    const size_t idx=(matAddr>=baseAddr && (matAddr-baseAddr)%sizeof(CanePacket)==0)?size_t((matAddr-baseAddr)/sizeof(CanePacket)):size_t(-1);
-                    if(&camera==&combined && idx<packetMvps.size()) {
-                        if(!packetMvpValid[idx]) {
+                    if(&camera==&combined && draw.mvpIdx<packetMvps.size()) {
+                        if(!packetMvpValid[draw.mvpIdx]) {
                             C3D_Mtx model=matrix(draw.material->model);
-                            Mtx_Multiply(&packetMvps[idx],&combined,&model);
-                            packetMvpValid[idx]=1;
+                            Mtx_Multiply(&packetMvps[draw.mvpIdx],&combined,&model);
+                            packetMvpValid[draw.mvpIdx]=1;
                         }
-                        C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER,projection,&packetMvps[idx]);
+                        writeProjDirect(packetMvps[draw.mvpIdx]);
                     } else {
                         C3D_Mtx model=matrix(draw.material->model),mvp;Mtx_Multiply(&mvp,&camera,&model);
-                        C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER,projection,&mvp);
+                        writeProjDirect(mvp);
                     }
                 }
-                float darken=std::clamp(draw.material->darken,0.0f,1.0f);
-                setTint(darken,darken,darken,std::clamp(draw.material->alpha,0.0f,1.0f));
+                setTint(draw.tintDarken,draw.tintDarken,draw.tintDarken,draw.tintAlpha);
                 lastMaterial=draw.material;lastCamera=&camera;lastWorldBaked=draw.worldBaked;
             }
-            if(draw.vertices!=lastBuf) {
-                auto* buf=C3D_GetBufInfo();BufInfo_Init(buf);BufInfo_Add(buf,draw.vertices,sizeof(Vertex),3,0x210);
-                lastBuf=draw.vertices;
-            }
+            setBufOffset(draw.bufOffset);
             if(draw.phase==RP_ProjVolume) {
                 setTexMode(0);lastTex0=nullptr;lastDepthWrite=-1;
                 if(!draw.shader)return;
                 bool additive=(draw.shader->grfshd&1)!=0;
-                C3D_AlphaTest(false,GPU_ALWAYS,0);
+                setAlphaTest(false,GPU_ALWAYS,0);
                 C3D_DepthTest(true,GPU_GREATER,static_cast<GPU_WRITEMASK>(0));
                 C3D_StencilTest(true,GPU_ALWAYS,128,128,128);
                 C3D_StencilOp(GPU_STENCIL_ZERO,GPU_STENCIL_REPLACE,GPU_STENCIL_ZERO);
@@ -2484,7 +3313,7 @@ public:
                 C3D_AlphaBlend(GPU_BLEND_ADD,GPU_BLEND_ADD,GPU_SRC_ALPHA,additive?GPU_ONE:GPU_ONE_MINUS_SRC_ALPHA,GPU_ONE,GPU_ZERO);
                 C3D_StencilOp(GPU_STENCIL_KEEP,GPU_STENCIL_KEEP,GPU_STENCIL_KEEP);
                 auto* env=C3D_GetTexEnv(0);C3D_TexEnvSrc(env,C3D_Both,GPU_CONSTANT);C3D_TexEnvFunc(env,C3D_Both,GPU_REPLACE);
-                glm::vec4 color=glm::clamp(draw.shader->rgbaVolume,glm::vec4(0),glm::vec4(1));color.r*=.5f;color.g*=.5f;color.b*=.5f;color.a*=std::clamp(draw.material->alpha,0.0f,1.0f);
+                glm::vec4 color=glm::clamp(draw.shader->rgbaVolume,glm::vec4(0),glm::vec4(1));color.r*=.5f;color.g*=.5f;color.b*=.5f;color.a*=draw.tintAlpha;
                 C3D_TexEnvColor(env,(u32(color.r*255)|(u32(color.g*255)<<8)|(u32(color.b*255)<<16)|(u32(color.a*255)<<24)));
                 C3D_CullFace(GPU_CULL_FRONT_CCW);C3D_DrawElements(GPU_TRIANGLES,draw.count,C3D_UNSIGNED_SHORT,draw.indices);
                 C3D_TexEnvSrc(env,C3D_Both,GPU_TEXTURE0,GPU_PRIMARY_COLOR);C3D_TexEnvFunc(env,C3D_Both,GPU_MODULATE);
@@ -2492,202 +3321,292 @@ public:
                 // alone would leave subsequent geometry using the volume tint.
                 C3D_DirtyTexEnv(env);
                 C3D_AlphaBlend(GPU_BLEND_ADD,GPU_BLEND_ADD,GPU_SRC_ALPHA,GPU_ONE_MINUS_SRC_ALPHA,GPU_ONE,GPU_ZERO);
-                C3D_StencilTest(false,GPU_ALWAYS,0,255,255);C3D_CullFace(GPU_CULL_NONE);lastCull=int(GPU_CULL_NONE);currentTexMode=-1;C3D_AlphaTest(true,GPU_GREATER,24);
+                lastBlend=BlendMode::Alpha;
+                C3D_StencilTest(false,GPU_ALWAYS,0,255,255);C3D_CullFace(GPU_CULL_NONE);lastCull=int(GPU_CULL_NONE);currentTexMode=-1;
+                setAlphaTest(true,GPU_GREATER,24);
+                c3dStateDirty=true;bufInfoFlushed=true;
                 drawCalls+=3;
                 return;
             }
-            if(draw.phase==RP_Background || draw.phase==RP_Foreground || draw.phase==RP_WorldMap) {
+            if(draw.phase==RP_Background) {
+                if(lastDepthWrite!=-3) {
+                    C3D_DepthTest(true,GPU_GEQUAL,GPU_WRITE_COLOR);c3dStateDirty=true;
+                    lastDepthWrite=-3;
+                }
+            } else if(draw.phase==RP_Foreground || draw.phase==RP_WorldMap) {
                 if(lastDepthWrite!=-2) {
-                    C3D_DepthTest(false,GPU_ALWAYS,GPU_WRITE_COLOR);
+                    C3D_DepthTest(false,GPU_ALWAYS,GPU_WRITE_COLOR);c3dStateDirty=true;
                     lastDepthWrite=-2;
                 }
             } else if(draw.phase==RP_MurkClear || draw.phase==RP_MurkFill) {
-                C3D_DepthTest(true,GPU_GEQUAL,GPU_WRITE_COLOR);
+                C3D_DepthTest(true,GPU_GEQUAL,GPU_WRITE_COLOR);c3dStateDirty=true;
                 lastDepthWrite=-1;
             } else {
                 int wantDepthWrite=draw.phase==RP_Translucent?0:1;
                 if(wantDepthWrite!=lastDepthWrite) {
-                    C3D_DepthTest(true,GPU_GREATER,wantDepthWrite?GPU_WRITE_ALL:GPU_WRITE_COLOR);
+                    C3D_DepthTest(true,GPU_GREATER,wantDepthWrite?GPU_WRITE_ALL:GPU_WRITE_COLOR);c3dStateDirty=true;
                     lastDepthWrite=wantDepthWrite;
                 }
             }
             setCull(draw.flipped?GPU_CULL_FRONT_CCW:GPU_CULL_BACK_CCW);
             setTexMode(draw.texMode);
             C3D_Tex* bt0=draw.tex0?draw.tex0:&white;
-            if(bt0!=lastTex0) {C3D_TexBind(0,bt0);lastTex0=bt0;}
-            C3D_Tex* bt1=lastTex1;
+            if(bt0!=lastTex0) {C3D_TexBind(0,bt0);c3dStateDirty=true;lastTex0=bt0;}
             if(draw.texMode>=1) {
-                bt1=draw.tex1?draw.tex1:&white;
-                if(bt1!=lastTex1) {C3D_TexBind(1,bt1);lastTex1=bt1;}
+                C3D_Tex* bt1=draw.tex1?draw.tex1:&white;
+                if(bt1!=lastTex1) {C3D_TexBind(1,bt1);c3dStateDirty=true;lastTex1=bt1;}
             }
             if(draw.texMode==2) {
                 C3D_Tex* bt2=draw.tex2?draw.tex2:&white;
-                if(bt2!=lastTex2) {C3D_TexBind(2,bt2);lastTex2=bt2;}
+                if(bt2!=lastTex2) {C3D_TexBind(2,bt2);c3dStateDirty=true;lastTex2=bt2;}
             }
-            const bool cutout=draw.phase==RP_Cutout || draw.phase==RP_CutoutAfterProjVolume;
-            const bool translucent=draw.phase==RP_Translucent;
-            if(cutout || translucent) {
-                // Match DrawGlob/DrawTranslucent: material-specific blending,
-                // solid alpha writes depth; the soft fringe never writes it.
-                const unsigned flags=draw.shader?draw.shader->grfshd:2;
-                const bool additive=translucent?(flags!=2 && flags!=6):!draw.material->pglob->fTransluscentSort;
-                const C3D_Tex* alphaTex=(draw.texMode>=1)?bt1:bt0;
-                const bool binaryCutout=cutout && !additive && !draw.hasSoftAlpha &&
-                    draw.material->alpha>=0.999f && isBinaryAlphaTex(alphaTex);
-                if(binaryCutout) {
-                    C3D_AlphaTest(true,GPU_GEQUAL,128);
-                    C3D_DrawElements(GPU_TRIANGLES,draw.count,C3D_UNSIGNED_SHORT,draw.indices);++drawCalls;
-                    C3D_AlphaTest(true,GPU_GREATER,24);
-                } else {
-                    C3D_AlphaBlend(GPU_BLEND_ADD,GPU_BLEND_ADD,GPU_SRC_ALPHA,additive?GPU_ONE:GPU_ONE_MINUS_SRC_ALPHA,GPU_ONE,GPU_ZERO);
-                    if(draw.material->alpha>=0.89f) {
-                        C3D_DepthTest(true,GPU_GREATER,GPU_WRITE_ALL);
-                        C3D_AlphaTest(true,GPU_GEQUAL,230);
-                        C3D_DrawElements(GPU_TRIANGLES,draw.count,C3D_UNSIGNED_SHORT,draw.indices);++drawCalls;
-                        C3D_DepthTest(true,GPU_GREATER,GPU_WRITE_COLOR);
-                    } else if(lastDepthWrite!=0) {
-                        C3D_DepthTest(true,GPU_GREATER,GPU_WRITE_COLOR);
-                    }
-                    C3D_AlphaTest(true,GPU_GREATER,0);
-                    C3D_DrawElements(GPU_TRIANGLES,draw.count,C3D_UNSIGNED_SHORT,draw.indices);++drawCalls;
-                    C3D_AlphaBlend(GPU_BLEND_ADD,GPU_BLEND_ADD,GPU_SRC_ALPHA,GPU_ONE_MINUS_SRC_ALPHA,GPU_ONE,GPU_ZERO);
-                    C3D_AlphaTest(true,GPU_GREATER,24);
-                    lastDepthWrite=0;
-                }
-            } else {
-                C3D_DrawElements(GPU_TRIANGLES,draw.count,C3D_UNSIGNED_SHORT,draw.indices);++drawCalls;
+            switch(draw.kind) {
+                case DrawKind::Opaque:
+                    setBlend(BlendMode::Opaque);
+                    setAlphaTest(false,GPU_ALWAYS,0);
+                    drawElementsFast(draw.indices,draw.idxPhysOffset,draw.count);++drawCalls;
+                    break;
+                case DrawKind::BinaryCutout:
+                    setBlend(BlendMode::Opaque);
+                    setAlphaTest(true,GPU_GEQUAL,128);
+                    drawElementsFast(draw.indices,draw.idxPhysOffset,draw.count);++drawCalls;
+                    break;
+                case DrawKind::TwoPassAlpha:
+                case DrawKind::TwoPassAdditive:
+                    // Match DrawGlob/DrawTranslucent: solid alpha writes depth;
+                    // the soft fringe never writes it.
+                    setBlend(draw.kind==DrawKind::TwoPassAdditive?BlendMode::Additive:BlendMode::Alpha);
+                    if(lastDepthWrite!=1) {C3D_DepthTest(true,GPU_GREATER,GPU_WRITE_ALL);c3dStateDirty=true;lastDepthWrite=1;}
+                    setAlphaTest(true,GPU_GEQUAL,230);
+                    drawElementsFast(draw.indices,draw.idxPhysOffset,draw.count);++drawCalls;
+                    C3D_DepthTest(true,GPU_GREATER,GPU_WRITE_COLOR);c3dStateDirty=true;lastDepthWrite=0;
+                    setAlphaTest(true,GPU_GREATER,0);
+                    drawElementsFast(draw.indices,draw.idxPhysOffset,draw.count);++drawCalls;
+                    break;
+                case DrawKind::OnePassAlpha:
+                case DrawKind::OnePassAdditive:
+                    setBlend(draw.kind==DrawKind::OnePassAdditive?BlendMode::Additive:BlendMode::Alpha);
+                    if(lastDepthWrite!=0) {C3D_DepthTest(true,GPU_GREATER,GPU_WRITE_COLOR);c3dStateDirty=true;lastDepthWrite=0;}
+                    setAlphaTest(true,GPU_GREATER,0);
+                    drawElementsFast(draw.indices,draw.idxPhysOffset,draw.count);++drawCalls;
+                    break;
+                case DrawKind::StandardAlpha:
+                default:
+                    setBlend(BlendMode::Alpha);
+                    setAlphaTest(true,GPU_GREATER,24);
+                    drawElementsFast(draw.indices,draw.idxPhysOffset,draw.count);++drawCalls;
+                    break;
             }
         };
-        bool skyStereo=false;
-        for(int rp=0;rp<RP_Max;++rp) {
-            if(stereoActive && skyStereo!=(rp==RP_Background)) {
-                skyStereo=rp==RP_Background;
-                if(skyStereo)setStereo(0,skyStereoW,eyeWarp.limit);else setStereo(eyeWarp.z,eyeWarp.w,eyeWarp.limit);
+        bool replayedEye=false;
+        const bool recordEye0=(stereoActive && !postTarget && eyeIndex==0);
+        if(stereoActive && !postTarget) {
+            setBufOffset(dynamicBufOffset[slot]);
+            C3D_TexBind(0,&white);lastTex0=&white;
+            C3D_DepthTest(false,GPU_NEVER,static_cast<GPU_WRITEMASK>(0));
+            C3D_DrawArrays(GPU_TRIANGLES,0,3);
+            bufInfoFlushed=true;c3dStateDirty=false;lastDepthWrite=-1;
+        }
+        if(eyeIndex==1 && stereoActive && !postTarget && replayValid) {
+            u32* curBuf=nullptr;u32 curSize=0,curOff=0;
+            GPUCMD_GetBuffer(&curBuf,&curSize,&curOff);
+            const u32 totalReplay=(replayOpaque.end-replayOpaque.start)+
+                                  (replaySky.end-replaySky.start)+
+                                  (replayRest.end-replayRest.start);
+            if(curBuf==replayCmdBuf && curOff+totalReplay+2048u<=curSize) {
+                if(replayOpaque.end>replayOpaque.start)
+                    GPUCMD_AddRawCommands(replayCmdBuf+replayOpaque.start,replayOpaque.end-replayOpaque.start);
+                if(replaySky.end>replaySky.start) {
+                    writeStereoDirect(0.0f,skyStereoW,eyeWarp.limit);
+                    GPUCMD_AddRawCommands(replayCmdBuf+replaySky.start,replaySky.end-replaySky.start);
+                }
+                if(replayRest.end>replayRest.start) {
+                    writeStereoDirect(eyeWarp.z,eyeWarp.w,eyeWarp.limit);
+                    GPUCMD_AddRawCommands(replayCmdBuf+replayRest.start,replayRest.end-replayRest.start);
+                }
+                drawCalls+=replayEye0Draws;mergedCallCount+=replayEye0Merged;
+                boundProgram=nullptr;
+                unlitState();
+                C3D_TexBind(0,&white);
+                C3D_DepthTest(true,GPU_GREATER,GPU_WRITE_COLOR);
+                lastBufOffset=~0u;setBufOffset(dynamicBufOffset[slot]);
+                tintValid=false;lastMaterial=nullptr;lastCamera=nullptr;lastWorldBaked=false;
+                lastTex0=&white;lastTex1=&white;lastTex2=&white;lastDepthWrite=0;currentTexMode=0;
+                lastCull=int(GPU_CULL_NONE);lastBlend=BlendMode::Alpha;
+                lastAlphaEnable=true;lastAlphaFunc=GPU_GREATER;lastAlphaRef=0;
+                c3dStateDirty=true;replayedEye=true;
             }
-            if(rp==RP_WorldMap)continue;
+        }
+        if(!replayedEye) {
+        u32* recBase=nullptr;u32 recSize=0,recOff=0;
+        const unsigned eye0DrawStart=drawCalls,eye0MergedStart=mergedCallCount;
+        if(recordEye0) {
+            GPUCMD_GetBuffer(&recBase,&recSize,&recOff);
+            replayCmdBuf=recBase;replayOpaque.start=recOff;
+        }
+        static constexpr RP kRenderOrder[]={
+            RP_DynamicTexture,RP_BlotContext,
+            RP_Opaque,RP_Background,RP_Cutout,RP_CelBorder,
+            RP_ProjVolume,RP_OpaqueAfterProjVolume,RP_CutoutAfterProjVolume,
+            RP_CelBorderAfterProjVolume,RP_MurkClear,RP_MurkOpaque,RP_MurkFill,
+            RP_Translucent,RP_TranslucentCelBorder,RP_Blip,RP_Foreground
+        };
+        for(RP rp:kRenderOrder) {
+            if(recordEye0 && rp==RP_Background) {
+                replayOpaque.end=gpuCmdBufOffset;
+                writeStereoDirect(0.0f,skyStereoW,eyeWarp.limit);
+                replaySky.start=gpuCmdBufOffset;
+            } else if(stereoActive && !recordEye0 && rp==RP_Background) {
+                writeStereoDirect(0.0f,skyStereoW,eyeWarp.limit);
+            }
             if(!mergedDraws[rp].empty()) {
-                if(lastDepthWrite!=1) {C3D_DepthTest(true,GPU_GREATER,GPU_WRITE_ALL);lastDepthWrite=1;}
+                if(lastDepthWrite!=1) {C3D_DepthTest(true,GPU_GREATER,GPU_WRITE_ALL);c3dStateDirty=true;lastDepthWrite=1;}
                 const bool cutoutBatch=(rp==RP_Cutout || rp==RP_CutoutAfterProjVolume);
-                if(cutoutBatch)C3D_AlphaTest(true,GPU_GEQUAL,128);
-                C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER,projection,&combined);
+                setBlend(BlendMode::Opaque);
+                setAlphaTest(cutoutBatch,cutoutBatch?GPU_GEQUAL:GPU_ALWAYS,cutoutBatch?128:0);
+                writeProjDirect(combined);
                 setTint(1,1,1,1);
-                lastMaterial=nullptr;lastCamera=nullptr;lastWorldBaked=false;
+                lastMaterial=nullptr;lastCamera=&combined;lastWorldBaked=true;
                 setCull(GPU_CULL_BACK_CCW);
                 for(const auto& md:mergedDraws[rp]) {
-                    const Vertex* vptr=worldChunks[md.chunkIdx].vertices;
-                    if(vptr!=lastBuf) {
-                        auto* buf=C3D_GetBufInfo();BufInfo_Init(buf);BufInfo_Add(buf,vptr,sizeof(Vertex),3,0x210);
-                        lastBuf=vptr;
-                    }
+                    setBufOffset(worldChunks[md.chunkIdx].bufOffset);
                     setTexMode(md.texMode);
                     C3D_Tex* bt0=md.tex0?md.tex0:&white;
-                    if(bt0!=lastTex0) {C3D_TexBind(0,bt0);lastTex0=bt0;}
+                    if(bt0!=lastTex0) {C3D_TexBind(0,bt0);c3dStateDirty=true;lastTex0=bt0;}
                     if(md.texMode>=1) {
                         C3D_Tex* bt1=md.tex1?md.tex1:&white;
-                        if(bt1!=lastTex1) {C3D_TexBind(1,bt1);lastTex1=bt1;}
+                        if(bt1!=lastTex1) {C3D_TexBind(1,bt1);c3dStateDirty=true;lastTex1=bt1;}
                     }
                     if(md.texMode==2) {
                         C3D_Tex* bt2=md.tex2?md.tex2:&white;
-                        if(bt2!=lastTex2) {C3D_TexBind(2,bt2);lastTex2=bt2;}
+                        if(bt2!=lastTex2) {C3D_TexBind(2,bt2);c3dStateDirty=true;lastTex2=bt2;}
                     }
-                    C3D_DrawElements(GPU_TRIANGLES,md.indexCount,C3D_UNSIGNED_SHORT,batchIndices[slot]+md.indexOffset);
+                    const u32 idxPhys=batchIndicesPhys[slot]!=~0u?(batchIndicesPhys[slot]+u32(md.indexOffset*sizeof(uint16_t))):~0u;
+                    drawElementsFast(batchIndices[slot]+md.indexOffset,idxPhys,md.indexCount);
                     ++drawCalls;++mergedCallCount;
                 }
-                if(cutoutBatch)C3D_AlphaTest(true,GPU_GREATER,24);
             }
-            if(!phaseBuckets[rp].empty())
-                for(const auto& draw:phaseBuckets[rp])drawMesh(draw,combined);
+            if(!phaseBuckets[rp].empty()) {
+                const C3D_Mtx& phaseCam=(rp==RP_Background)?skyCombined:combined;
+                for(const auto& draw:phaseBuckets[rp])drawMesh(draw,phaseCam);
+            }
+            if(recordEye0 && rp==RP_Background) {
+                replaySky.end=gpuCmdBufOffset;
+                writeStereoDirect(eyeWarp.z,eyeWarp.w,eyeWarp.limit);
+                replayRest.start=gpuCmdBufOffset;
+            } else if(stereoActive && !recordEye0 && rp==RP_Background) {
+                writeStereoDirect(eyeWarp.z,eyeWarp.w,eyeWarp.limit);
+            }
         }
-        setTexMode(0);setCull(GPU_CULL_NONE);
-        C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER,projection,&combined);
+        setTexMode(0);setCull(GPU_CULL_NONE);setBlend(BlendMode::Alpha);
+        writeProjDirect(combined);
         setTint(1,1,1,1);
-        C3D_DepthTest(true,GPU_GEQUAL,GPU_WRITE_COLOR);C3D_AlphaTest(true,GPU_GREATER,0);
-        auto* shadowBuf=C3D_GetBufInfo();BufInfo_Init(shadowBuf);BufInfo_Add(shadowBuf,dynamic[slot],sizeof(Vertex),3,0x210);
+        C3D_DepthTest(true,GPU_GEQUAL,GPU_WRITE_COLOR);c3dStateDirty=true;lastDepthWrite=0;
+        setAlphaTest(true,GPU_GREATER,0);
+        setBufOffset(dynamicBufOffset[slot]);
         for(size_t i=0;i<shadowPasses.size();++i) {
             const auto& pass=shadowPasses[i];if(!pass.overlayCount)continue;
             C3D_TexBind(0,&shadowMaps[i].texture);C3D_DrawArrays(GPU_TRIANGLES,pass.overlayFirst,pass.overlayCount);
+            c3dStateDirty=false;bufInfoFlushed=true;
         }
         setTint(1,1,1,1);
-        if(outlineSegments) {
+        if(outlineVertCount) {
             C3D_Mtx identity;Mtx_Identity(&identity);
-            C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER,projection,&identity);
+            writeProjDirect(identity);
             C3D_DepthTest(true,GPU_GEQUAL,GPU_WRITE_COLOR);C3D_TexBind(0,&white);
-            auto* buf=C3D_GetBufInfo();BufInfo_Init(buf);BufInfo_Add(buf,dynamic[slot],sizeof(Vertex),3,0x210);
-            C3D_DrawArrays(GPU_TRIANGLES,outlineFirst,outlineSegments*6);
-            C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER,projection,&combined);
+            setBufOffset(dynamicBufOffset[slot]);
+            C3D_DrawArrays(GPU_TRIANGLES,outlineFirst,outlineVertCount);
+            c3dStateDirty=false;bufInfoFlushed=true;
+            writeProjDirect(combined);
         }
-        C3D_DepthTest(true,GPU_GREATER,GPU_WRITE_COLOR);C3D_AlphaTest(true,GPU_GREATER,0);
-        auto* particleBuf=C3D_GetBufInfo();BufInfo_Init(particleBuf);BufInfo_Add(particleBuf,dynamic[slot],sizeof(Vertex),3,0x210);
+        C3D_DepthTest(true,GPU_GREATER,GPU_WRITE_COLOR);c3dStateDirty=true;lastDepthWrite=0;
+        setBufOffset(dynamicBufOffset[slot]);
         for(const auto& batch:particleDraws) {
-            C3D_AlphaBlend(GPU_BLEND_ADD,GPU_BLEND_ADD,GPU_SRC_ALPHA,batch.additive?GPU_ONE:GPU_ONE_MINUS_SRC_ALPHA,GPU_ONE,GPU_ZERO);
-            C3D_TexBind(0,batch.tex?batch.tex:&white);
+            setBlend(batch.additive?BlendMode::Additive:BlendMode::Alpha);
+            C3D_TexBind(0,batch.tex?batch.tex:&white);c3dStateDirty=true;
             if(batch.additive) {
-                C3D_DepthTest(true,GPU_GREATER,GPU_WRITE_COLOR);
-                C3D_AlphaTest(true,GPU_GREATER,0);
+                if(lastDepthWrite!=0) {C3D_DepthTest(true,GPU_GREATER,GPU_WRITE_COLOR);lastDepthWrite=0;}
+                setAlphaTest(true,GPU_GREATER,0);
                 C3D_DrawArrays(GPU_TRIANGLES,batch.first,batch.count);
+                c3dStateDirty=false;bufInfoFlushed=true;
             } else if(batch.maxAlpha>=128) {
                 // BLIP alpha passes use 128/255, unlike mesh cutouts (0.9).
                 // The complementary tests avoid drawing smoke twice.
                 C3D_DepthTest(true,GPU_GREATER,GPU_WRITE_ALL);
-                C3D_AlphaTest(true,GPU_GEQUAL,128);
+                setAlphaTest(true,GPU_GEQUAL,128);
                 C3D_DrawArrays(GPU_TRIANGLES,batch.first,batch.count);
-                C3D_DepthTest(true,GPU_GREATER,GPU_WRITE_COLOR);
-                C3D_AlphaTest(true,GPU_LESS,128);
+                C3D_DepthTest(true,GPU_GREATER,GPU_WRITE_COLOR);lastDepthWrite=0;
+                setAlphaTest(true,GPU_LESS,128);
                 C3D_DrawArrays(GPU_TRIANGLES,batch.first,batch.count);
+                c3dStateDirty=false;bufInfoFlushed=true;
             } else {
-                C3D_DepthTest(true,GPU_GREATER,GPU_WRITE_COLOR);
-                C3D_AlphaTest(true,GPU_GREATER,0);
+                if(lastDepthWrite!=0) {C3D_DepthTest(true,GPU_GREATER,GPU_WRITE_COLOR);lastDepthWrite=0;}
+                setAlphaTest(true,GPU_GREATER,0);
                 C3D_DrawArrays(GPU_TRIANGLES,batch.first,batch.count);
+                c3dStateDirty=false;bufInfoFlushed=true;
             }
         }
-        C3D_AlphaTest(true,GPU_GREATER,0);
-        C3D_DepthTest(true,GPU_GREATER,GPU_WRITE_COLOR);
-        C3D_AlphaBlend(GPU_BLEND_ADD,GPU_BLEND_ADD,GPU_SRC_ALPHA,GPU_ONE_MINUS_SRC_ALPHA,GPU_ONE,GPU_ZERO);
+        setAlphaTest(true,GPU_GREATER,0);
+        if(lastDepthWrite!=0) {C3D_DepthTest(true,GPU_GREATER,GPU_WRITE_COLOR);c3dStateDirty=true;lastDepthWrite=0;}
+        setBlend(BlendMode::Alpha);
+        if(recordEye0) {
+            replayRest.end=gpuCmdBufOffset;
+            u32* recEndBuf=nullptr;GPUCMD_GetBuffer(&recEndBuf,nullptr,nullptr);
+            replayEye0Draws=drawCalls-eye0DrawStart;
+            replayEye0Merged=mergedCallCount-eye0MergedStart;
+            replayValid=(recEndBuf==replayCmdBuf &&
+                         replayOpaque.end>=replayOpaque.start && ((replayOpaque.end-replayOpaque.start)&1u)==0 &&
+                         replaySky.end>=replaySky.start && ((replaySky.end-replaySky.start)&1u)==0 &&
+                         replayRest.end>=replayRest.start && ((replayRest.end-replayRest.start)&1u)==0);
+        }
+        } // !replayedEye
         if(!phaseBuckets[RP_WorldMap].empty()) {
-            unlitState();
+            unlitState();c3dStateDirty=true;
+            lastBlend=BlendMode::Alpha;lastAlphaEnable=true;lastAlphaFunc=GPU_GREATER;lastAlphaRef=0;
             C3D_Mtx ortho;Mtx_OrthoTilt(&ortho,0,400,240,0,0,1,true);
             ortho.r[2]=FVec4_New(0,0,0,-.5f);
-            C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER,projection,&ortho);
+            writeProjDirect(ortho);
             setTint(1,1,1,1);
-            C3D_DepthTest(false,GPU_ALWAYS,GPU_WRITE_COLOR);
-            C3D_AlphaTest(true,GPU_GREATER,0);
-            auto* wmBuf=C3D_GetBufInfo();BufInfo_Init(wmBuf);BufInfo_Add(wmBuf,dynamic[slot],sizeof(Vertex),3,0x210);
+            C3D_DepthTest(false,GPU_ALWAYS,GPU_WRITE_COLOR);lastDepthWrite=-2;c3dStateDirty=true;
+            setBufOffset(dynamicBufOffset[slot]);
             C3D_TexBind(0,&white);C3D_DrawArrays(GPU_TRIANGLES,wmOverlayFirst,12);
+            c3dStateDirty=false;bufInfoFlushed=true;
             C3D_Mtx wmProj,wmCombined;
             Mtx_PerspTilt(&wmProj,1.0f,C3D_AspectRatioTop,std::max(.01f,g_pcm->sNearClip),std::max(g_pcm->sNearClip+1.0f,g_pcm->sFarClip),false);
             Mtx_Multiply(&wmCombined,&wmProj,&view);
-            lastMaterial=nullptr;lastCamera=nullptr;lastWorldBaked=false;lastBuf=nullptr;
+            lastMaterial=nullptr;lastCamera=nullptr;lastWorldBaked=false;
             lastTex0=nullptr;lastTex1=nullptr;lastTex2=nullptr;lastDepthWrite=-1;
-            currentTexMode=0;lastCull=int(GPU_CULL_NONE);
+            currentTexMode=0;lastCull=int(GPU_CULL_NONE);c3dStateDirty=true;
             for(const auto& draw:phaseBuckets[RP_WorldMap])drawMesh(draw,wmCombined);
-            setTexMode(0);setCull(GPU_CULL_NONE);
+            setTexMode(0);setCull(GPU_CULL_NONE);setBlend(BlendMode::Alpha);
         }
-        C3D_AlphaTest(true,GPU_GREATER,0);
+        setAlphaTest(true,GPU_GREATER,0);
         auto drawHudLayer=[&](bool bottom) {
-            unlitState();
-            if(stereoActive && !bottom)setStereo(0,(eyeIndex?1.f:-1.f)*(CaneStereoOption3ds(5)-50)*.0004f*slider,.025f);
+            unlitState();c3dStateDirty=true;
+            lastBlend=BlendMode::Alpha;lastAlphaEnable=true;lastAlphaFunc=GPU_GREATER;lastAlphaRef=0;
+            if(stereoActive && !bottom) {
+                bindSceneProgram(false,true);
+                writeStereoDirect(0,(eyeIndex?1.f:-1.f)*(CaneStereoOption3ds(5)-50)*.0004f*slider,.025f);
+            }
             C3D_Mtx ortho;Mtx_OrthoTilt(&ortho,0,bottom?320:400,240,0,0,1,true);
             // PICA's visible clip-depth interval is [-w,0]. Keep 2D
             // glyphs inside it rather than exactly on the near clip plane.
             ortho.r[2]=FVec4_New(0,0,0,-.5f);
-            C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER,projection,&ortho);
+            writeProjDirect(ortho);
             setTint(1,1,1,1);
-            C3D_DepthTest(false,GPU_ALWAYS,GPU_WRITE_COLOR);
-            auto* buf=C3D_GetBufInfo();BufInfo_Init(buf);BufInfo_Add(buf,dynamic[slot],sizeof(Vertex),3,0x210);
+            C3D_DepthTest(false,GPU_ALWAYS,GPU_WRITE_COLOR);lastDepthWrite=-2;c3dStateDirty=true;
+            setBufOffset(dynamicBufOffset[slot]);
             unsigned tvStencil=0;
-            bool lastHudAdd=false;
             for(const auto& hud:hudDraws) {
                 if((hud.layer!=CaneHudLayer::Top)!=bottom)continue;
-                if(hud.additive!=lastHudAdd) {
-                    C3D_AlphaBlend(GPU_BLEND_ADD,GPU_BLEND_ADD,GPU_SRC_ALPHA,hud.additive?GPU_ONE:GPU_ONE_MINUS_SRC_ALPHA,GPU_ONE,GPU_ZERO);
-                    lastHudAdd=hud.additive;
-                }
+                setBlend(hud.additive?BlendMode::Additive:BlendMode::Alpha);
                 if(hud.tv) {
                     // Stamp the original animated curved aperture and clear
                     // depth only there, leaving the level outside it intact.
-                    ++tvStencil;unlitState();
+                    ++tvStencil;unlitState();c3dStateDirty=true;
+                    lastBlend=BlendMode::Alpha;lastAlphaEnable=true;lastAlphaFunc=GPU_GREATER;lastAlphaRef=0;
                     C3D_Mtx farOrtho=ortho;farOrtho.r[2]=FVec4_New(0,0,0,-.0001f);
-                    C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER,projection,&farOrtho);
+                    writeProjDirect(farOrtho);
                     setTint(1,1,1,1);
                     C3D_StencilTest(true,GPU_ALWAYS,tvStencil,255,255);
                     C3D_StencilOp(GPU_STENCIL_KEEP,GPU_STENCIL_KEEP,GPU_STENCIL_REPLACE);
@@ -2708,26 +3627,31 @@ public:
                         placement.r[1].w=1-hud.scale*400.f/320.f-2*hud.dx/320.f;
                         Mtx_Multiply(&placed,&placement,&tvCamera);tvCamera=placed;
                     }
-                    lastMaterial=nullptr;lastCamera=nullptr;lastWorldBaked=false;lastBuf=nullptr;lastTex0=nullptr;lastTex1=nullptr;lastTex2=nullptr;lastDepthWrite=-1;
-                    currentTexMode=0;lastCull=int(GPU_CULL_NONE);
+                    lastMaterial=nullptr;lastCamera=nullptr;lastWorldBaked=false;lastTex0=nullptr;lastTex1=nullptr;lastTex2=nullptr;lastDepthWrite=-1;
+                    currentTexMode=0;lastCull=int(GPU_CULL_NONE);c3dStateDirty=true;
                     for(const auto& draw:tvDraws)if(draw.material->tv==hud.tv)drawMesh(draw,tvCamera);
                     currentTexMode=0;lastCull=int(GPU_CULL_NONE);
-                    unlitState();C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER,projection,&ortho);
+                    unlitState();c3dStateDirty=true;
+                    lastBlend=BlendMode::Alpha;lastAlphaEnable=true;lastAlphaFunc=GPU_GREATER;lastAlphaRef=0;
+                    if(stereoActive && !bottom) {
+                        bindSceneProgram(false,true);
+                        writeStereoDirect(0,(eyeIndex?1.f:-1.f)*(CaneStereoOption3ds(5)-50)*.0004f*slider,.025f);
+                    }
+                    writeProjDirect(ortho);
                     setTint(1,1,1,1);
-                    C3D_DepthTest(false,GPU_ALWAYS,GPU_WRITE_COLOR);
-                    C3D_AlphaBlend(GPU_BLEND_ADD,GPU_BLEND_ADD,GPU_SRC_ALPHA,GPU_ONE_MINUS_SRC_ALPHA,GPU_ONE,GPU_ZERO);
-                    lastHudAdd=false;
-                    buf=C3D_GetBufInfo();BufInfo_Init(buf);BufInfo_Add(buf,dynamic[slot],sizeof(Vertex),3,0x210);
-                } else {C3D_TexBind(0,hud.tex?hud.tex:&white);C3D_DrawArrays(GPU_TRIANGLES,hud.first,hud.count);}
+                    C3D_DepthTest(false,GPU_ALWAYS,GPU_WRITE_COLOR);lastDepthWrite=-2;c3dStateDirty=true;
+                    setBufOffset(dynamicBufOffset[slot]);
+                } else {C3D_TexBind(0,hud.tex?hud.tex:&white);C3D_DrawArrays(GPU_TRIANGLES,hud.first,hud.count);c3dStateDirty=false;bufInfoFlushed=true;}
             }
-            if(lastHudAdd)C3D_AlphaBlend(GPU_BLEND_ADD,GPU_BLEND_ADD,GPU_SRC_ALPHA,GPU_ONE_MINUS_SRC_ALPHA,GPU_ONE,GPU_ZERO);
+            setBlend(BlendMode::Alpha);
         };
         if(!hudDraws.empty())drawHudLayer(false);
         if(postTarget) {
             C3D_FrameSplit(0);
             C3D_SetViewport(0,0,240,400);
             C3D_FrameDrawOn(target);
-            unlitState();
+            unlitState();c3dStateDirty=true;tintValid=false;
+            bindProgram(&program);
             C3D_Mtx postOrtho;Mtx_OrthoTilt(&postOrtho,0,400,240,0,0,1,true);
             postOrtho.r[2]=FVec4_New(0,0,0,-.5f);
             C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER,projection,&postOrtho);
@@ -2742,37 +3666,38 @@ public:
             // Never overwrite scene vertices while the GPU is using them.
             auto* q=postQuad;
             const float xy[6][2]={{0,0},{400,0},{0,240},{0,240},{400,0},{400,240}};
-            // The GPU framebuffer is portrait/tilted even though the game
-            // coordinates are landscape. Undo that rotation when sampling.
-            const float uv[6][2]={{maxU,0},{maxU,maxV},{0,0},{0,0},{maxU,maxV},{0,maxV}};
+            // The GPU framebuffer is portrait/tilted (Mtx_OrthoTilt maps x=0->+1/maxV,
+            // x=400->-1/0, y=0->+1/maxU, y=240->-1/0). Undo both rotation and V polarity
+            // consistently for every postTarget mode (SSAA and PICA-SR).
+            const float uv[6][2]={{maxU,maxV},{maxU,0},{0,maxV},{0,maxV},{maxU,0},{0,0}};
             for(unsigned i=0;i<6;++i) {
-                // Native-resolution filter output needs the opposite screen
-                // X direction. Correct only this presentation quad, keeping
-                // scene projection, stereo and the SSAA resolve unchanged.
-                q[i].position[0]=displayMode>=4?400-xy[i][0]:xy[i][0];
+                q[i].position[0]=xy[i][0];
                 q[i].position[1]=xy[i][1];q[i].position[2]=0;
                 std::memset(q[i].color,255,4);q[i].uv[0]=uv[i][0];q[i].uv[1]=uv[i][1];
             }
             GSPGPU_FlushDataCache(q,sizeof(Vertex)*6);
-            auto* blitBuf=C3D_GetBufInfo();BufInfo_Init(blitBuf);BufInfo_Add(blitBuf,q,sizeof(Vertex),3,0x210);
+            frameBuf->buffers[0].offset=postQuadBufOffset;
+            lastBufOffset=postQuadBufOffset;
+            C3D_SetBufInfo(frameBuf);
             C3D_FVUnifSet(GPU_VERTEX_SHADER,filterOffset,du,0,0,0);
             C3D_FVUnifSet(GPU_VERTEX_SHADER,filterOffsetNegative,-du,0,0,0);
             if(displayMode==4)fsr3dsTevKernel(FSR3DS_KERNEL_AA_EDGE_APPLY,160);
             else if(displayMode==5)fsr3dsTevKernel(FSR3DS_KERNEL_LITE,0);
             else fsr3dsTevModulate();
-            C3D_DrawArrays(GPU_TRIANGLES,0,6);
-            unlitState();
-            C3D_AlphaBlend(GPU_BLEND_ADD,GPU_BLEND_ADD,GPU_SRC_ALPHA,GPU_ONE_MINUS_SRC_ALPHA,GPU_ONE,GPU_ZERO);
-            C3D_AlphaTest(true,GPU_GREATER,0);C3D_DepthTest(true,GPU_GREATER,GPU_WRITE_COLOR);
+            C3D_DrawArrays(GPU_TRIANGLES,0,6);bufInfoFlushed=true;
+            unlitState();c3dStateDirty=true;
+            lastBlend=BlendMode::Alpha;lastAlphaEnable=true;lastAlphaFunc=GPU_GREATER;lastAlphaRef=0;
+            C3D_DepthTest(true,GPU_GREATER,GPU_WRITE_COLOR);
         }
         if(bottomOutput && eyeIndex==(stereoActive?1:0)) {
             C3D_RenderTargetClear(bottomTarget,C3D_CLEAR_ALL,0x03070eff,0);
-            C3D_FrameDrawOn(bottomTarget);
+            C3D_FrameDrawOn(bottomTarget);c3dStateDirty=true;
             drawHudLayer(true);
         }
         } // eye pass; simulation, animation, culling and shadows ran once.
         setStereo();
         C3D_AlphaTest(true,GPU_GREATER,24);
+        inFrameCmd=false;
         u64 tDrawEnd=osGetTime();
         C3D_FrameEnd(0);u64 tEnd=osGetTime();frameMs=float(tEnd-begin);gpuMs=C3D_GetDrawingTime();drawCmdMs=C3D_GetProcessingTime();drawCallCount=drawCalls;
         if(frame%120==0)std::fprintf(stderr,"Texture memory: vram=%lu/%luKiB linear=%luKiB ETC1=%u saved=%luKiB targets=%dKiB shadows=%uKiB\n",
@@ -2788,7 +3713,16 @@ public:
         C3D_FrameSync();
         for(auto& wc:worldChunks)if(wc.vertices)linearFree(wc.vertices);
         worldChunks.clear();worldChunks.shrink_to_fit();
-        for(auto& gc:globCachePool)for(auto& sc:gc.subs)if(sc.localVerts)linearFree(sc.localVerts);
+        for(auto& lc:localChunks)if(lc.vertices)linearFree(lc.vertices);
+        localChunks.clear();localChunks.shrink_to_fit();
+        localFreeList.clear();localFreeList.shrink_to_fit();
+        for(auto& gc:globCachePool)for(auto& sc:gc.subs)if(sc.localOwned && sc.localVerts)linearFree(sc.localVerts);
+        liveLightCache.forEach([](const LiveKey&,LiveEntry& le) {
+            for(int b=0;b<2;++b)if(le.owned[b] && le.verts[b])linearFree(le.verts[b]);
+        });
+        liveLightCache.clear(true);
+        liveDecisions.clear();ownedLiveFlush.clear();
+        batchKeyMap.clear(true);batchKeyTable.clear();bucketHead.clear();entryNext.clear();touchedKeys.clear();
         indexBuffers.forEach([](const SUBGLOB*,IndexBuf& buf) {if(buf.data)linearFree(buf.data);});
         globCachePool.clear();globCacheFree.clear();std::vector<uint32_t>().swap(globCacheFree);
         globCacheMap.clear(true);
@@ -2805,10 +3739,12 @@ public:
         for(int i=0;i<RP_Max;++i) {phaseBuckets[i].clear();staticBatches[i].clear();mergedDraws[i].clear();}
         for(auto& cv:casterDynVerts)cv.clear();
         tvDraws.clear();fadedWorldDraws.clear();shadowReceivers.clear();
-        shadowPasses.clear();casterSubs.clear();particleDraws.clear();hudDraws.clear();outlineLines.clear();
-        celJobs.clear();celJobOut.clear();animJobs.clear();animDrawSlots.clear();allBoneNormMats.clear();hudJobs.clear();shadowJobOut.clear();
-        canePackets.clear();caneCelPackets.clear();caneParticles.clear();caneCasters.clear();caneTvContext=nullptr;
-        caneHud.clear();frame=0;
+        shadowPasses.clear();casterSubs.clear();particleDraws.clear();hudDraws.clear();
+        celJobs.clear();celJobVerts.clear();animJobs.clear();animDrawSlots.clear();allBoneNormMats.clear();hudJobs.clear();casterJobs.clear();
+        particleJobs.clear();particleJobVerts.clear();particleJobDraws.clear();
+        shadowJobOut.clear();
+        canePackets.clear();caneCelPackets.clear();caneParticles.clear();caneCasters.clear();caneDynamicLights.clear();caneTvContext=nullptr;
+        CaneClearHudPool();frame=0;
     }
     ~CaneRuntimeGraphics() {
         if(started)C3D_FrameSync();
@@ -2829,6 +3765,10 @@ public:
         for(auto* pointer:batchIndices)if(pointer)linearFree(pointer);
         if(texStage)linearFree(texStage);
         if(postQuad)linearFree(postQuad);
+        if(flat1ProgramStarted)shaderProgramFree(&flat1Program);
+        if(flat1Shader)DVLB_Free(flat1Shader);
+        if(stereo1ProgramStarted)shaderProgramFree(&stereo1Program);
+        if(stereo1Shader)DVLB_Free(stereo1Shader);
         if(movieProgramStarted)shaderProgramFree(&movieProgram);
         if(movieShader)DVLB_Free(movieShader);
         C3D_TexDelete(&white);
